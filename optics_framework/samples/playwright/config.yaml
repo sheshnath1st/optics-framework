@@ -1,0 +1,82 @@
+# --------------------------------------------------
+# Core logging & execution
+# --------------------------------------------------
+console: true
+log_level: "DEBUG"
+
+file_log: false
+json_log: false
+json_path: null
+log_path: null
+
+halt_duration: 0.1
+max_attempts: 3
+
+# --------------------------------------------------
+# Driver configuration
+# --------------------------------------------------
+driver_sources:
+  - playwright:
+      enabled: true
+      url: null
+      capabilities:
+        browser: chromium
+        headless: false
+        viewport:
+          width: 1280
+          height: 800
+
+# --------------------------------------------------
+# Element sources (REQUIRED)
+# Native Playwright element resolver
+# --------------------------------------------------
+elements_sources:
+    - playwright_find_element:
+        enabled: true
+        url: null
+        capabilities: {}
+    - playwright_page_source:
+        enabled: true
+        url: null
+        capabilities: {}
+    - playwright_screenshot:
+        enabled: false
+        url: null
+        capabilities: {}
+
+# --------------------------------------------------
+# OCR / Text detection (optional)
+# --------------------------------------------------
+text_detection:
+  - easyocr:
+      enabled: true
+      url: null
+      capabilities: {}
+
+  - pytesseract:
+      enabled: false
+      url: null
+      capabilities: {}
+
+  - google_vision:
+      enabled: false
+      url: null
+      capabilities: {}
+
+# --------------------------------------------------
+# Image detection
+# --------------------------------------------------
+image_detection:
+  - templatematch:
+      enabled: true
+      url: null
+      capabilities: {}
+
+# --------------------------------------------------
+# Optional paths
+# --------------------------------------------------
+project_path: null
+execution_output_path: null
+event_attributes_json: null
+include: null
+exclude: null
