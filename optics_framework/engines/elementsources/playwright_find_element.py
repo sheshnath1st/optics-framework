@@ -1,0 +1,165 @@
+import time
+from typing import Optional, Any, List
+
+from playwright.sync_api import Page, TimeoutError as PWTimeout
+from optics_framework.common.logging_config import internal_logger
+from optics_framework.common.error import OpticsError, Code
+from optics_framework.common.elementsource_interface import ElementSourceInterface
+from optics_framework.common import utils
+
+
+class PlaywrightFindElement(ElementSourceInterface):
+    REQUIRED_DRIVER_TYPE = "playwright"
+
+    def __init__(self, driver: Optional[Any] = None):
+        self.driver = driver
+        self.page = None
+
+    def _require_page(self):
+        if self.driver is None or not hasattr(self.driver, "page"):
+            raise OpticsError(
+                Code.E0101,
+                message="Playwright driver is not initialized for PlaywrightFindElement",
+            )
+        self.page = self.driver.page
+        return self.page
+
+    # --------------------------------------------------
+    # Screenshot / page source
+    # --------------------------------------------------
+
+    def capture(self) -> None:
+        """
+        Playwright element source does not capture screenshots.
+        """
+        internal_logger.exception(
+            "PlaywrightFindElement does not support capture()"
+        )
+        raise NotImplementedError(
+            "PlaywrightFindElement does not support capture()"
+        )
+
+    def get_page_source(self) -> str:
+        """
+        Returns current DOM HTML
+        """
+        page = self._require_page()
+        return page.content()
+
+    def get_interactive_elements(self) -> List[Any]:
+        """
+        Not supported (use Playwright native locators instead)
+        """
+        internal_logger.exception(
+            "PlaywrightFindElement does not support get_interactive_elements()"
+        )
+        raise NotImplementedError(
+            "PlaywrightFindElement does not support get_interactive_elements()"
+        )
+
+    # --------------------------------------------------
+    # Element location
+    # --------------------------------------------------
+
+    def locate(self, element: str, index: Optional[int] = None) -> Any:
+        """
+        Locate an element using Playwright selectors
+
+        Supports:
+        - CSS
+        - text=Exact / Partial
+        - XPath (via //)
+        """
+
+        page = self._require_page()
+
+        if index is not None:
+            raise OpticsError(
+                Code.E0202,
+                message="PlaywrightFindElement does not support index-based locating",
+            )
+
+        element_type = utils.determine_element_type(element)
+
+        try:
+            if element_type == "Image":
+                return None
+
+            # XPath
+            if element_type == "XPath":
+                locator = page.locator(f"xpath={element}")
+
+            # Text
+            elif element_type == "Text":
+                locator = page.get_by_text(element, exact=False)
+
+            # CSS / default
+            else:
+                locator = page.locator(element)
+
+            if locator.count() == 0:
+                return None
+
+            locator.first.wait_for(state="visible", timeout=3000)
+            return locator.first
+
+        except PWTimeout:
+            return None
+
+        except Exception as e:
+            internal_logger.error(
+                f"Error locating element: {element}", exc_info=True
+            )
+            raise OpticsError(
+                Code.E0201,
+                message=f"Error locating element: {element}",
+                cause=e,
+            ) from e
+
+    # --------------------------------------------------
+    # Assertions
+    # --------------------------------------------------
+
+    def assert_elements(
+        self,
+        elements: List[str],
+        timeout: int = 10,
+        rule: str = "any",
+    ):
+        """
+        Assert presence of elements
+
+        rule:
+        - any: return True if any found
+        - all: return True only if all found
+        """
+
+        if rule not in ("any", "all"):
+            raise OpticsError(
+                Code.E0403,
+                message="Invalid rule. Use 'any' or 'all'",
+            )
+
+        start_time = time.time()
+        found = dict.fromkeys(elements, False)
+
+        while time.time() - start_time < timeout:
+            try:
+                for el in elements:
+                    if not found[el] and self.locate(el):
+                        found[el] = True
+                        if rule == "any":
+                            return True, utils.get_timestamp()
+
+                if rule == "all" and all(found.values()):
+                    return True, utils.get_timestamp()
+
+                time.sleep(0.5)
+
+            except Exception as e:
+                raise OpticsError(
+                    Code.E0401,
+                    message=f"Error during element assertion: {e}",
+                ) from e
+
+        return False, utils.get_timestamp()
