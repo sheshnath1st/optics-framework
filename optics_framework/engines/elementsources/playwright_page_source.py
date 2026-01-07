@@ -6,6 +6,7 @@ from optics_framework.common.logging_config import internal_logger
 from optics_framework.common.elementsource_interface import ElementSourceInterface
 from optics_framework.common.error import OpticsError, Code
 from optics_framework.common import utils
+from optics_framework.common.async_utils import run_async
 
 
 PLAYWRIGHT_NOT_INITIALISED_MSG = (
@@ -32,14 +33,41 @@ class PlaywrightPageSource(ElementSourceInterface):
 
     def _require_page(self):
         internal_logger.debug(
-            "[PlaywrightPageSource] driver=%s, has_page=%s",
+            "[PlaywrightPageSource] driver=%s | has_page_attr=%s | page=%s",
             self.driver,
-            hasattr(self.driver, "page") if self.driver else False
+            hasattr(self.driver, "page") if self.driver else False,
+            getattr(self.driver, "page", None) if self.driver else None
         )
 
-        if self.driver is None or not hasattr(self.driver, "page"):
-            internal_logger.error(PLAYWRIGHT_NOT_INITIALISED_MSG)
-            raise OpticsError(Code.E0101, message=PLAYWRIGHT_NOT_INITIALISED_MSG)
+        # 🔴 Driver not injected
+        if self.driver is None:
+            raise OpticsError(
+                Code.E0101,
+                message=(
+                    "Playwright driver is not injected into PlaywrightPageSource. "
+                    "Session may not be initialized."
+                )
+            )
+
+        # 🔴 Driver exists but page attribute missing
+        if not hasattr(self.driver, "page"):
+            raise OpticsError(
+                Code.E0101,
+                message=(
+                    "Playwright driver does not expose 'page'. "
+                    "Invalid driver implementation or setup."
+                )
+            )
+
+        # 🔴 Page attribute exists but page not yet created
+        if self.driver.page is None:
+            raise OpticsError(
+                Code.E0101,
+                message=(
+                    "Playwright page is not initialized yet. "
+                    "Ensure launch_app() completed before using element sources."
+                )
+            )
 
         self.page = self.driver.page
         return self.page
@@ -56,23 +84,33 @@ class PlaywrightPageSource(ElementSourceInterface):
             "PlaywrightPageSource does not support screen capture."
         )
 
-    def get_page_source(self) -> Tuple[str, str]:
+    def get_page_source(self) -> str:
         """
         Returns full DOM HTML and timestamp
         """
+        internal_logger.error("trying get_page_source ..............")
         page = self._require_page()
+        internal_logger.error("trying get_page_source _require_page ..............")
         timestamp = utils.get_timestamp()
 
-        html = page.content()
+        # html = run_async(page.content()) # page.content()
+        html: str = run_async(page.content())
+        internal_logger.debug(
+            "[PlaywrightPageSource] Page source fetched, length=%d",
+            len(html)
+        )
         self.tree = etree.HTML(html)
         self.root = self.tree
 
         internal_logger.debug(
             "========== PLAYWRIGHT PAGE SOURCE FETCHED =========="
         )
+        internal_logger.debug(
+            "========== XML tree ========== %s ",html
+        )
         internal_logger.debug("Timestamp: %s", timestamp)
 
-        return html, timestamp
+        return html
 
     def get_interactive_elements(self) -> List[Any]:
         """
@@ -125,7 +163,7 @@ class PlaywrightPageSource(ElementSourceInterface):
             if index is not None:
                 locator = locator.nth(index)
 
-            count = locator.count()
+            count = run_async(locator.count())
             internal_logger.debug(
                 "[PlaywrightLocate] Locator '%s' found %d elements",
                 element, count
@@ -171,7 +209,13 @@ class PlaywrightPageSource(ElementSourceInterface):
         if isinstance(elements, str):
             elements = [elements]
 
-        page = self._require_page()
+        # Check if driver is initialized before entering the loop
+        try:
+            page = self._require_page()
+        except OpticsError:
+            # If driver is not initialized, return False immediately instead of looping
+            return False, utils.get_timestamp()
+
         start_time = time.time()
 
         internal_logger.info(
@@ -201,10 +245,9 @@ class PlaywrightPageSource(ElementSourceInterface):
                         "[PlaywrightPageSource] Element '%s'",
                         element
                     )
-                    found = locator.count() > 0
-                    results.append(found)
-                    html, _ = self.get_page_source()
-                    found = element in html
+                    # Use run_async to await async Playwright methods
+                    count = run_async(locator.count())
+                    found = count > 0
                     results.append(found)
 
                     if rule == "any" and found:
@@ -215,12 +258,8 @@ class PlaywrightPageSource(ElementSourceInterface):
                         "[PlaywrightPageSource] Error checking '%s': %s",
                         element, str(e)
                     )
-                    html, _ = self.get_page_source()
-                    found = element in html
-                    results.append(found)
-
-                    if rule == "any" and found:
-                        return True, utils.get_timestamp()
+                    # Don't call get_page_source() in exception handler as it may also fail
+                    # Just mark as not found
                     results.append(False)
 
             if rule == "all" and all(results):
@@ -232,4 +271,4 @@ class PlaywrightPageSource(ElementSourceInterface):
             "[PlaywrightPageSource] Timeout reached. rule=%s elements=%s",
             rule, elements
         )
-        return False, utils.get_timestamp()
+        return  False, utils.get_timestamp()

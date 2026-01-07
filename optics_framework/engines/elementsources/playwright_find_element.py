@@ -1,11 +1,12 @@
 import time
 from typing import Optional, Any, List
 
-from playwright.sync_api import Page, TimeoutError as PWTimeout
+from playwright.sync_api import TimeoutError as PWTimeout
 from optics_framework.common.logging_config import internal_logger
 from optics_framework.common.error import OpticsError, Code
 from optics_framework.common.elementsource_interface import ElementSourceInterface
 from optics_framework.common import utils
+from optics_framework.common.async_utils import run_async
 
 
 class PlaywrightFindElement(ElementSourceInterface):
@@ -44,7 +45,7 @@ class PlaywrightFindElement(ElementSourceInterface):
         Returns current DOM HTML
         """
         page = self._require_page()
-        return page.content()
+        return run_async(page.content())
 
     def get_interactive_elements(self) -> List[Any]:
         """
@@ -97,10 +98,12 @@ class PlaywrightFindElement(ElementSourceInterface):
             else:
                 locator = page.locator(element)
 
-            if locator.count() == 0:
+            # Use run_async to await async Playwright methods
+            count = run_async(locator.count())
+            if count == 0:
                 return None
 
-            locator.first.wait_for(state="visible", timeout=3000)
+            run_async(locator.first.wait_for(state="visible", timeout=3000))
             return locator.first
 
         except PWTimeout:
@@ -139,6 +142,13 @@ class PlaywrightFindElement(ElementSourceInterface):
                 Code.E0403,
                 message="Invalid rule. Use 'any' or 'all'",
             )
+
+        # Check if driver is initialized before entering the loop
+        try:
+            self._require_page()
+        except OpticsError:
+            # If driver is not initialized, return False immediately instead of looping
+            return False, utils.get_timestamp()
 
         start_time = time.time()
         found = dict.fromkeys(elements, False)

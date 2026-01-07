@@ -1,4 +1,3 @@
-import base64
 from typing import Optional, Any
 import numpy as np
 import cv2
@@ -6,6 +5,7 @@ import cv2
 from playwright.sync_api import Page
 from optics_framework.common.elementsource_interface import ElementSourceInterface
 from optics_framework.common.logging_config import internal_logger
+from optics_framework.common.async_utils import run_async
 
 
 class PlaywrightScreenshot(ElementSourceInterface):
@@ -49,11 +49,13 @@ class PlaywrightScreenshot(ElementSourceInterface):
         Returns:
             numpy.ndarray: Screenshot image
         """
+        page = self._require_page()
         try:
             internal_logger.debug("Capturing Playwright screenshot")
 
             # Playwright returns raw PNG bytes
-            screenshot_bytes = self.page.screenshot(full_page=True)
+            # Use run_async to handle async page.screenshot() if page is from async_api
+            screenshot_bytes = run_async(page.screenshot(full_page=True))
 
             internal_logger.debug(
                 "Playwright screenshot bytes length: %d",

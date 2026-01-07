@@ -1,19 +1,29 @@
 # --------------------------------------------------
-# Core logging & execution
+# Logging
 # --------------------------------------------------
 console: true
-log_level: "DEBUG"
-
-file_log: false
+file_log: true
 json_log: false
-json_path: null
-log_path: null
+log_level: DEBUG
 
-halt_duration: 0.1
+# Optional (recommended)
+log_path: /Users/samyadav/Documents/Mozark/optics-framework/execution_output/logs
+json_path: /Users/samyadav/Documents/Mozark/optics-framework/execution_output/logs/json
+
+# --------------------------------------------------
+# Project paths
+# --------------------------------------------------
+project_path: /Users/samyadav/Documents/Mozark/optics-framework
+execution_output_path: /Users/samyadav/Documents/Mozark/optics-framework/execution_output
+
+# --------------------------------------------------
+# Runtime behavior
+# --------------------------------------------------
+halt_duration: 0.2
 max_attempts: 3
 
 # --------------------------------------------------
-# Driver configuration
+# Drivers
 # --------------------------------------------------
 driver_sources:
   - playwright:
@@ -22,43 +32,30 @@ driver_sources:
       capabilities:
         browser: chromium
         headless: false
-        viewport:
-          width: 1280
-          height: 800
+        slow_mo: 300
 
 # --------------------------------------------------
-# Element sources (REQUIRED)
-# Native Playwright element resolver
+# Element sources
 # --------------------------------------------------
 elements_sources:
-    - playwright_find_element:
-        enabled: true
-        url: null
-        capabilities: {}
-    - playwright_page_source:
-        enabled: true
-        url: null
-        capabilities: {}
-    - playwright_screenshot:
-        enabled: false
-        url: null
-        capabilities: {}
-
-# --------------------------------------------------
-# OCR / Text detection (optional)
-# --------------------------------------------------
-text_detection:
-  - easyocr:
+  - playwright_find_element:
+      enabled: true
+      url: null
+      capabilities: {}
+  - playwright_page_source:
+      enabled: true
+      url: null
+      capabilities: {}
+  - playwright_screenshot:
       enabled: true
       url: null
       capabilities: {}
 
-  - pytesseract:
-      enabled: false
-      url: null
-      capabilities: {}
-
-  - google_vision:
+# --------------------------------------------------
+# OCR
+# --------------------------------------------------
+text_detection:
+  - easyocr:
       enabled: false
       url: null
       capabilities: {}
@@ -68,15 +65,6 @@ text_detection:
 # --------------------------------------------------
 image_detection:
   - templatematch:
-      enabled: true
+      enabled: false
       url: null
       capabilities: {}
-
-# --------------------------------------------------
-# Optional paths
-# --------------------------------------------------
-project_path: null
-execution_output_path: null
-event_attributes_json: null
-include: null
-exclude: null

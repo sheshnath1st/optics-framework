@@ -8,7 +8,9 @@ from optics_framework.common.async_utils import run_async
 
 
 class Playwright(DriverInterface):
-    REQUIRED_DRIVER_TYPE = "playwright"
+    DEPENDENCY_TYPE = "driver_sources"
+    NAME = "playwright"
+
 
     def __init__(self, config: dict, event_sdk: Optional[EventSDK] = None):
         self.config = config or {}
@@ -57,10 +59,10 @@ class Playwright(DriverInterface):
             raise OpticsError(Code.E0102, str(e), cause=e)
 
     def launch_other_app(self, app_name: str, event_name=None):
-        raise NotImplementedError("launch_other_app not supported for Playwright")
+        return run_async(self._launch_app_async(app_name, event_name))
 
     def get_app_version(self) -> str:
-        raise NotImplementedError("get_app_version not supported for Playwright")
+        return "get_app_version not supported for Playwright"
 
     # =====================================================
     # PRESS / CLICK
@@ -70,7 +72,12 @@ class Playwright(DriverInterface):
         run_async(self._press_element_async(element, repeat, event_name))
 
     async def _press_element_async(self, element, repeat, event_name):
-        locator = self.page.locator(element)
+        # Handle both string selectors and Playwright locator objects
+        if isinstance(element, str):
+            locator = self.page.locator(element)
+        else:
+            # element is already a Playwright locator object
+            locator = element
         await locator.wait_for(state="visible", timeout=15000)
 
         for _ in range(repeat):
@@ -93,7 +100,31 @@ class Playwright(DriverInterface):
             await self.page.mouse.click(x, y)
 
     def press_keycode(self, keycode: str, event_name=None):
-        raise NotImplementedError("press_keycode is mobile-only")
+        """
+        Press a keycode/key. Supports common keys like "Enter", "Tab", "Escape", etc.
+        For Playwright, we use keyboard.press() which accepts key names.
+        """
+        # Map common keycode names to Playwright key names
+        key_map = {
+            "Enter": "Enter",
+            "Return": "Enter",
+            "Tab": "Tab",
+            "Escape": "Escape",
+            "Backspace": "Backspace",
+            "Delete": "Delete",
+            "Space": " ",
+            "ArrowUp": "ArrowUp",
+            "ArrowDown": "ArrowDown",
+            "ArrowLeft": "ArrowLeft",
+            "ArrowRight": "ArrowRight",
+        }
+
+        # Use mapped key or the keycode string directly (Playwright accepts key names)
+        key = key_map.get(keycode, keycode)
+        run_async(self.page.keyboard.press(key))
+
+        if event_name and self.event_sdk:
+            self.event_sdk.capture_event(event_name)
 
     # =====================================================
     # TEXT INPUT
@@ -134,11 +165,81 @@ class Playwright(DriverInterface):
         await self.page.mouse.wheel(0, delta)
 
     def swipe_element(self, element: str, direction: str, swipe_length: int, event_name=None):
-        raise NotImplementedError("swipe_element not supported in Playwright")
+        """
+        Playwright-safe swipe_element:
+        Translates swipe into scroll on the element's nearest scrollable container.
+        """
 
-    def scroll(self, direction: str, duration: int, event_name=None):
-        delta = duration if direction == "down" else -duration
-        run_async(self.page.mouse.wheel(0, delta))
+        if not self.page:
+            raise RuntimeError("Playwright page not initialized")
+
+        # 🔒 Web rule: swipe == scroll
+        try:
+            run_async(
+                self._swipe_element_async(
+                    element=element,
+                    direction=direction,
+                    swipe_length=swipe_length
+                )
+            )
+        except Exception as e:
+            raise RuntimeError(
+                f"swipe_element failed for Playwright. "
+                f"Use scroll_from_element instead. Root cause: {e}"
+            ) from e
+
+    async def _swipe_element_async(self, element: str, direction: str, swipe_length: int):
+        locator = self.page.locator(element)
+        await locator.wait_for(state="visible", timeout=10000)
+
+        # Calculate scroll delta
+        delta = swipe_length if direction == "down" else -swipe_length
+
+        # Scroll nearest scrollable parent
+        await locator.evaluate(
+            """(el, delta) => {
+                let node = el;
+                while (node) {
+                    if (node.scrollHeight > node.clientHeight) {
+                        node.scrollBy(0, delta);
+                        return;
+                    }
+                    node = node.parentElement;
+                }
+                window.scrollBy(0, delta);
+            }""",
+            delta
+        )
+
+    # def scroll(self, direction: str, duration: int, event_name=None):
+    #     delta = duration if direction == "down" else -duration
+    #     execution_logger.debug(
+    #             "[Playwright] scroll direction=%s pixels=%d",
+    #             direction, delta
+    #         )
+    #     run_async(self.page.mouse.wheel(0, delta))
+
+    def scroll(self, direction: str = "down", pixels: int = 120, event_name=None):
+        for _ in range(2):
+            run_async(self.page.mouse.wheel(0, pixels if direction == "down" else -pixels))
+            run_async(self.page.wait_for_timeout(120))
+
+    # def scroll(self, direction: str, pixels: int, event_name=None):
+    #     execution_logger.debug(
+    #         "[Playwright] scroll direction=%s pixels=%d",
+    #         direction, pixels
+    #     )
+    #     run_async(self._scroll_async(direction, pixels))
+
+    # async def _scroll_async(self, direction: str, pixels: int):
+    #     if direction == "down":
+    #         await self.page.evaluate(
+    #             "(p) => window.scrollBy(0, p)", pixels
+    #         )
+    #     else:
+    #         await self.page.evaluate(
+    #             "(p) => window.scrollBy(0, -p)", pixels
+    #         )
 
     # =====================================================
     # GETTERS / TERMINATION
