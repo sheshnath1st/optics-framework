@@ -3,9 +3,7 @@ import yaml
 import pytest
 from optics_framework.optics import Optics
 
-import logging
 
-logger = logging.getLogger(__name__)
 
 PLAYWRIGHT_CONFIG_PATH = os.path.join(
     os.path.dirname(__file__),
@@ -72,8 +70,7 @@ def test_framework_clear_element_text(optics):
     optics.sleep("2")
     # Verify cleared
     value = optics.get_text(username)
-    optics.sleep("2")
-    assert value in ("", None)
+    assert value is None or value == ""
 
 
 
