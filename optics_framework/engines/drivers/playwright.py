@@ -1,6 +1,6 @@
 import asyncio
 from typing import Optional
-from playwright.async_api import async_playwright, Page
+from playwright.async_api import async_playwright, Page, Locator
 from optics_framework.common.driver_interface import DriverInterface
 from optics_framework.common.error import OpticsError, Code
 from optics_framework.common.eventSDK import EventSDK
@@ -151,8 +151,34 @@ class Playwright(DriverInterface):
         run_async(self.page.keyboard.press("Backspace"))
 
     def clear_text_element(self, element: str, event_name=None):
-        run_async(self.page.locator(element).fill(""))
+        try:
+            # Handle both selector string and Locator
+            if isinstance(element, Locator):
+                locator = element
+                element_desc = "<Playwright Locator>"
+            else:
+                locator = self.page.locator(element)
+                element_desc = element
 
+            internal_logger.info(
+                "[Playwright] Clearing text for element: %s",
+                element_desc
+            )
+
+            run_async(locator.fill(""))
+
+            internal_logger.debug(
+                "[Playwright] Successfully cleared text for element: %s",
+                element_desc
+            )
+
+        except Exception as e:
+            internal_logger.error(
+                "[Playwright] Failed to clear text for element: %s | Error: %s",
+                element_desc,
+                e,
+                exc_info=True,
+            )
     # =====================================================
     # SCROLL / SWIPE
     # =====================================================
