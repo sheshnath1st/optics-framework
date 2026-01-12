@@ -186,9 +186,9 @@ class PlaywrightPageSource(ElementSourceInterface):
 
             # Try to locate the element using XPath
             locator = page.locator(f"xpath={xpath}")
-            count = run_async(locator.count())
+            found = self._locator_exists(locator)
 
-            if count == 0:
+            if not found:
                 return None
 
             # Get bounding box from the first matching element
@@ -661,30 +661,26 @@ class PlaywrightPageSource(ElementSourceInterface):
                     element
                 )
 
-        element_type = utils.determine_element_type(element)
-
         try:
             # -------------------------------------------------
             # Selector strategy
             # -------------------------------------------------
-            if element_type == "Text":
-                locator = page.get_by_text(element, exact=False)
-            elif element_type == "XPath":
-                locator = page.locator(f"xpath={element}")
-            else:
-                locator = page.locator(element)  # CSS
-
+            locator = self._resolve_locator(page, element)
             if index is not None:
                 locator = locator.nth(index)
 
-            count = run_async(locator.count())
-            internal_logger.debug(
-                "[PlaywrightLocate] Locator '%s' found %d elements",
-                element, count
-            )
-
-            if count == 0:
+            # 🔑 REPLACE duplicated count logic HERE
+            if not self._locator_exists(locator):
+                internal_logger.debug(
+                    "[PlaywrightLocate] Locator '%s' found 0 elements",
+                    element
+                )
                 return None
+
+            internal_logger.debug(
+                "[PlaywrightLocate] Locator '%s' found element(s)",
+                element
+            )
 
             return locator.first
 
@@ -746,15 +742,7 @@ class PlaywrightPageSource(ElementSourceInterface):
                         "testttttt [PlaywrightPageSource] Element '%s'",
                         element
                     )
-                    element_type = utils.determine_element_type(element)
-                    if element_type == "Text":
-                        locator = page.get_by_text(element, exact=False)
-                    elif element_type == "XPath":
-                        locator = page.locator(f"xpath={element}")
-                    else:
-                        # CSS selector
-                        locator = page.locator(element)
-
+                    locator = self._resolve_locator(page,element)
                     internal_logger.debug(
                         "[PlaywrightPageSource] Element '%s'",
                         element
@@ -785,4 +773,26 @@ class PlaywrightPageSource(ElementSourceInterface):
             "[PlaywrightPageSource] Timeout reached. rule=%s elements=%s",
             rule, elements
         )
-        return  False, utils.get_timestamp()
+        return False, utils.get_timestamp()
+
+    @staticmethod
+    def _resolve_locator(page: Any, element: str):
+        """
+        Resolve an element string into a Playwright locator.
+        """
+        element_type = utils.determine_element_type(element)
+
+        if element_type == "Text":
+            return page.get_by_text(element, exact=False)
+        if element_type == "XPath":
+            return page.locator(f"xpath={element}")
+
+        # Default: CSS selector
+        return page.locator(element)
+
+    @staticmethod
+    def _locator_exists(locator) -> bool:
+        try:
+            return run_async(locator.count()) > 0
+        except Exception:
+            return False
