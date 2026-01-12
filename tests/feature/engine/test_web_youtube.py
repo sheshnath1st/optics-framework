@@ -49,6 +49,15 @@ def test_youtube_click_search_box(optics):
     """
     optics.press_element('//input[@name="search_query"]')
 
+def test_youtube_click_search_box_and_pressKeyCode(optics):
+    """
+    Verify search box can be clicked
+    """
+    optics.press_element('//input[@name="search_query"]')
+    optics.sleep("2")
+
+
+
 if __name__ == "__main__":
     import pytest
     pytest.main([
