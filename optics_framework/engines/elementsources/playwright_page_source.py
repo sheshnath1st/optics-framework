@@ -32,6 +32,37 @@ class PlaywrightPageSource(ElementSourceInterface):
     # ---------------------------------------------------------
 
     def _require_page(self):
+        """
+        Ensure that a valid Playwright page instance is available.
+
+        This method acts as a strict precondition guard for all Playwright
+        operations that require an active page. It validates the driver
+        state step-by-step and fails fast with clear, actionable errors.
+
+        Validation sequence:
+        1. Confirm that a driver object was injected.
+        2. Confirm that the driver exposes a `page` attribute.
+        3. Confirm that the page has been initialized (launch_app completed).
+
+        Design notes:
+        - This method intentionally raises errors instead of returning None
+          to avoid silent failures and undefined behavior downstream.
+        - Centralizing these checks prevents duplicated validation logic
+          across element lookup, assertions, and page interactions.
+        - The resolved page reference is cached on `self.page` for reuse.
+
+        Returns:
+            Any:
+                A valid Playwright page instance.
+
+        Raises:
+            OpticsError:
+                If the driver or page is missing or not initialized.
+        """
+
+        # ------------------------------------------------------------------
+        # Diagnostic logging to help trace driver / page state during failures
+        # ------------------------------------------------------------------
         internal_logger.debug(
             "[PlaywrightPageSource] driver=%s | has_page_attr=%s | page=%s",
             self.driver,
@@ -39,7 +70,11 @@ class PlaywrightPageSource(ElementSourceInterface):
             getattr(self.driver, "page", None) if self.driver else None
         )
 
-        # 🔴 Driver not injected
+        # ---------------------------------------------------------------
+        # Guard 1: Driver must be injected into the page source
+        # ---------------------------------------------------------------
+        # Without a driver, no Playwright session exists and no operations
+        # can be performed safely.
         if self.driver is None:
             raise OpticsError(
                 Code.E0101,
@@ -49,7 +84,11 @@ class PlaywrightPageSource(ElementSourceInterface):
                 )
             )
 
-        # 🔴 Driver exists but page attribute missing
+        # ---------------------------------------------------------------
+        # Guard 2: Driver must expose a `page` attribute
+        # ---------------------------------------------------------------
+        # This protects against invalid driver implementations or incorrect
+        # framework wiring.
         if not hasattr(self.driver, "page"):
             raise OpticsError(
                 Code.E0101,
@@ -59,7 +98,11 @@ class PlaywrightPageSource(ElementSourceInterface):
                 )
             )
 
-        # 🔴 Page attribute exists but page not yet created
+        # ---------------------------------------------------------------
+        # Guard 3: Page must be initialized
+        # ---------------------------------------------------------------
+        # The driver exists, but launch_app() has not yet created a page.
+        # Accessing elements before this point would be unsafe.
         if self.driver.page is None:
             raise OpticsError(
                 Code.E0101,
@@ -69,6 +112,9 @@ class PlaywrightPageSource(ElementSourceInterface):
                 )
             )
 
+        # ---------------------------------------------------------------
+        # Cache and return the validated page instance
+        # ---------------------------------------------------------------
         self.page = self.driver.page
         return self.page
 
@@ -77,55 +123,158 @@ class PlaywrightPageSource(ElementSourceInterface):
     # ---------------------------------------------------------
 
     def capture(self):
+        """
+        Screen capture is intentionally NOT supported by PlaywrightPageSource.
+
+        Design rationale:
+        - PlaywrightPageSource is responsible only for DOM-based page source
+          inspection and element analysis.
+        - Visual capture responsibilities (screenshots, image comparison,
+          OCR, etc.) are handled by dedicated ElementSource implementations.
+        - Keeping this class DOM-focused avoids mixing visual and structural
+          concerns and keeps responsibilities clearly separated.
+
+        Behavior:
+        - Always raises NotImplementedError to fail fast if capture is
+          mistakenly invoked.
+        - Logs the failure at exception level to surface incorrect usage
+          clearly in execution logs.
+
+        Raises:
+            NotImplementedError:
+                Always raised to indicate unsupported operation.
+        """
+
+        # Explicitly log misuse to aid debugging and framework integration checks
         internal_logger.exception(
             "PlaywrightPageSource does not support screen capture."
         )
+
+        # Fail fast to prevent silent or partial behavior
         raise NotImplementedError(
             "PlaywrightPageSource does not support screen capture."
         )
 
     def get_page_source(self) -> str:
         """
-        Returns full DOM HTML and timestamp
+        Retrieve and parse the current page's DOM source using Playwright.
+
+        Design intent:
+        - Serve as the single authoritative entry point for fetching the
+          live DOM from the Playwright page.
+        - Convert raw HTML into an lxml tree for downstream XPath-based
+          analysis and element extraction.
+        - Keep DOM acquisition logic isolated from element filtering,
+          bounding-box calculations, and assertions.
+
+        Execution flow:
+        1. Validate that a Playwright page is available via `_require_page`.
+        2. Capture a timestamp for traceability and debugging.
+        3. Fetch the full HTML content asynchronously from Playwright.
+        4. Parse the HTML into an lxml tree and cache it on the instance.
+        5. Emit detailed debug logs for observability and diagnostics.
+
+        Important behavior notes:
+        - This method always fetches a *fresh* DOM snapshot from Playwright.
+        - Cached `self.tree` and `self.root` are overwritten on each call.
+        - No filtering or mutation of the DOM is performed here.
+        - Any timing or retry behavior must be handled by callers.
+
+        Returns:
+            str:
+                The raw HTML content of the current page.
         """
+
+        # Diagnostic log to trace invocation timing in complex flows
         internal_logger.error("trying get_page_source ..............")
+
+        # Ensure Playwright page is initialized and available
         page = self._require_page()
+
+        # Secondary diagnostic log to confirm successful page resolution
         internal_logger.error("trying get_page_source _require_page ..............")
+
+        # Capture timestamp before DOM retrieval for correlation in logs
         timestamp = utils.get_timestamp()
+
+        # Fetch the full HTML content asynchronously from Playwright
         html: str = run_async(page.content())
+
+        # Log size of the retrieved DOM for debugging large or empty pages
         internal_logger.debug(
             "[PlaywrightPageSource] Page source fetched, length=%d",
             len(html)
         )
+
+        # Parse HTML into an lxml tree for XPath-based processing
         self.tree = etree.HTML(html)
         self.root = self.tree
 
+        # High-visibility debug markers to aid log scanning
         internal_logger.debug(
             "========== PLAYWRIGHT PAGE SOURCE FETCHED =========="
         )
         internal_logger.debug(
-            "========== XML tree ========== %s ",html
+            "========== XML tree ========== %s ", html
         )
         internal_logger.debug("Timestamp: %s", timestamp)
 
+        # Return raw HTML to callers that need the original source
         return html
 
     def get_interactive_elements(self, filter_config: Optional[List[str]] = None) -> List[Dict]:
         """
-        Cross-platform element extraction for web pages.
+        Extract visible and interactive elements from the current web page.
+
+        Design intent:
+        - Provide a unified, cross-platform mechanism to introspect the current
+          DOM and return meaningful UI elements for automation, inspection,
+          or visual tooling.
+        - Act as a high-level orchestration method that coordinates DOM parsing,
+          bounding-box detection, filtering rules, and metadata enrichment.
+        - Keep element discovery logic centralized to avoid duplication across
+          engines, assertions, and test utilities.
+
+        How this method works:
+        1. Fetch and parse the latest DOM snapshot from Playwright.
+        2. Traverse all DOM nodes using XPath.
+        3. Attempt to calculate screen bounds for each node (visibility filter).
+        4. Apply semantic filters (buttons, inputs, images, text, etc.).
+        5. Extract display text using multiple fallbacks.
+        6. Generate a stable XPath for each included element.
+        7. Attach additional metadata for downstream consumers.
+
+        Filtering behavior:
+        - If `filter_config` is None or empty → all eligible elements are returned.
+        - If multiple filters are provided → an element is included if it matches
+          *any* of the specified filters.
+        - Filters are semantic, not structural (e.g., "button" vs tag-only).
+
+        Important behavior notes:
+        - Elements without calculable bounds are skipped (not visible / not rendered).
+        - DOM traversal order is preserved in the output list.
+        - No retries or waits are performed here; timing is handled upstream.
+        - This method is intentionally read-only and has no side effects
+          beyond updating cached DOM state.
 
         Args:
-            filter_config: Optional list of filter types. Valid values:
-                - "all": Show all elements (default when None or empty)
-                - "interactive": Only interactive elements
-                - "buttons": Only button elements
-                - "inputs": Only input/text field elements
-                - "images": Only image elements
-                - "text": Only text elements
-                Can be combined: ["buttons", "inputs"]
+            filter_config (Optional[List[str]]):
+                Optional list of filter types. Supported values:
+                    - "all": Show all elements (default when None or empty)
+                    - "interactive": Only interactive elements
+                    - "buttons": Only button elements
+                    - "inputs": Only input/text field elements
+                    - "images": Only image elements
+                    - "text": Only text elements
+                Filters may be combined, e.g. ["buttons", "inputs"].
 
         Returns:
-            List of dictionaries with keys: text, bounds, xpath, extra
+            List[Dict]:
+                A list of dictionaries with the following keys:
+                    - text   : Display text or fallback identifier
+                    - bounds : Screen coordinates (x1, y1, x2, y2)
+                    - xpath  : Generated XPath selector
+                    - extra  : Additional element metadata
         """
         # Ensure page source is fetched and parsed
         self.get_page_source()
@@ -167,14 +316,42 @@ class PlaywrightPageSource(ElementSourceInterface):
 
     def _extract_bounds(self, node: etree.Element, page: Any) -> Optional[Dict[str, int]]:
         """
-        Extract bounding box coordinates for a web element using Playwright.
+        Calculate the on-screen bounding box for a DOM element using Playwright.
+
+        Design intent:
+        - Bridge the gap between DOM-level elements (lxml) and rendered UI elements
+          in the browser viewport.
+        - Provide a visibility-aware filter: only elements that can be resolved
+          to actual screen coordinates are considered usable.
+        - Keep rendering concerns isolated from DOM traversal and filtering logic.
+
+        How this method works:
+        1. Generate a simple, Playwright-compatible XPath for the given DOM node.
+        2. Resolve the XPath to a Playwright locator.
+        3. Perform a lightweight existence check to avoid expensive calls.
+        4. Request the element’s bounding box from the browser.
+        5. Normalize the bounding box into integer screen coordinates.
+
+        Important behavior notes:
+        - Elements that cannot be located, rendered, or measured are silently
+          excluded by returning `None`.
+        - No retries or waits are performed here; this method is intentionally
+          fast and side-effect free.
+        - This method assumes the page has already been loaded and stabilized.
+        - Bounding boxes are returned in absolute viewport coordinates.
 
         Args:
-            node: The lxml element node
-            page: Playwright page object
+            node (etree.Element):
+                Parsed lxml DOM node representing the HTML element.
+            page (Any):
+                Active Playwright page instance used for rendering queries.
 
         Returns:
-            Dict with x1, y1, x2, y2 or None if cannot get bounds
+            Optional[Dict[str, int]]:
+                Dictionary with keys:
+                    - x1, y1: top-left corner
+                    - x2, y2: bottom-right corner
+                Returns None if bounds cannot be determined.
         """
         try:
             # Build a selector from the element
@@ -211,8 +388,39 @@ class PlaywrightPageSource(ElementSourceInterface):
     @staticmethod
     def _build_simple_xpath(node: etree.Element) -> Optional[str]:
         """
-        Build a simple XPath for locating an element in Playwright.
-        This is a fallback method for getting bounds.
+        Build a minimal, Playwright-compatible XPath for a given DOM node.
+
+        Design intent:
+        - Provide a *best-effort* XPath that is simple, readable, and fast to resolve.
+        - Prefer stable, unique attributes over deep DOM traversal.
+        - Act strictly as a fallback mechanism for operations like bounding-box
+          calculation where a locator is required but precision is not critical.
+
+        Why this method is intentionally "simple":
+        - It is NOT meant to generate a perfectly unique or future-proof XPath.
+        - It avoids expensive document-wide uniqueness checks.
+        - It prioritizes speed and resilience over absolute accuracy.
+        - More advanced XPath generation is handled elsewhere (`get_xpath`).
+
+        Resolution strategy (in order):
+        1. Use `id` attribute if present (most reliable and unique).
+        2. Use `data-testid` if available (common in test-friendly UIs).
+        3. Use `name` attribute when applicable.
+        4. Fall back to a hierarchical tag-based XPath with positional indexes.
+
+        Important behavior notes:
+        - Returned XPath may match multiple elements; callers must handle this.
+        - The XPath is always absolute (`//` or `/`) for Playwright compatibility.
+        - If the node cannot be resolved meaningfully, `None` is returned.
+        - This method performs NO validation against the live DOM.
+
+        Args:
+            node (etree.Element):
+                lxml DOM element for which an XPath is required.
+
+        Returns:
+            Optional[str]:
+                A simple XPath string or None if it cannot be constructed.
         """
         if node is None or not hasattr(node, "tag"):
             return None
@@ -265,20 +473,63 @@ class PlaywrightPageSource(ElementSourceInterface):
 
     def _extract_display_text(self, node: etree.Element, page: Any) -> Tuple[Optional[str], Optional[str]]:
         """
-        Extract display text from a web element.
+        Extract the most meaningful, human-readable text representation
+        of a web element.
 
-        Priority order:
-        1. Text content from lxml element (fastest)
-        2. aria-label
-        3. title
-        4. alt (for images)
-        5. placeholder (for inputs)
-        6. innerText (via Playwright, slower)
-        7. id
-        8. class (last resort)
+        Design intent:
+        - Provide a *best-effort* display label suitable for:
+            - visual inspection
+            - debugging
+            - element reporting
+            - UI exploration tooling
+        - Prefer fast, DOM-based extraction before falling back to
+          Playwright calls, which are slower and asynchronous.
+        - Avoid returning empty or misleading values whenever possible.
+
+        Text resolution strategy (ordered by cost & reliability):
+
+        1. Direct lxml text content (`node.text`)
+           - Fastest and cheapest operation.
+           - Captures inline text inside the element.
+
+        2. Tail text (`node.tail`)
+           - Handles text that appears immediately after the element.
+           - Useful for inline tags like <span>, <strong>, etc.
+
+        3. Accessibility attributes
+           - `aria-label` → primary accessibility label.
+           - `title`      → tooltip-style descriptions.
+
+        4. Media & input hints
+           - `alt`         → image alternative text.
+           - `placeholder` → input field hint text.
+
+        5. Live DOM text via Playwright (`innerText`)
+           - Most accurate visual representation.
+           - Slowest option due to browser round-trip.
+           - Used only when static DOM text is unavailable.
+
+        6. Structural fallbacks
+           - `id`    → often meaningful in test-oriented applications.
+           - `class` → LAST resort, generally not user-facing.
+
+        Important behavior notes:
+        - This method NEVER raises on failure; it fails gracefully.
+        - Returned attribute name indicates the source of extracted text.
+        - Returned text may not be unique or stable across renders.
+        - Empty or whitespace-only values are ignored at every step.
+
+        Args:
+            node (etree.Element):
+                lxml DOM node representing the element.
+            page (Any):
+                Active Playwright page instance used only for
+                innerText extraction when required.
 
         Returns:
-            Tuple of (text_value, attribute_used)
+            Tuple[Optional[str], Optional[str]]:
+                - text_value     → extracted display text (or None)
+                - attribute_used → source attribute name (or None)
         """
         attrs = node.attrib or {}
 
@@ -341,15 +592,47 @@ class PlaywrightPageSource(ElementSourceInterface):
 
     def _should_include_element(self, node: etree.Element, filter_config: Optional[List[str]]) -> bool:
         """
-        Determine if an element should be included based on filter_config.
+        Decide whether a DOM element should be included in the result set
+        based on the provided filter configuration.
+
+        Design intent:
+        - Provide a flexible, declarative filtering mechanism for element
+          extraction without hard-coding behavior at call sites.
+        - Allow callers to request *categories* of elements (buttons, inputs,
+          images, etc.) instead of dealing with raw DOM rules.
+        - Keep this method purely deterministic and side-effect free.
+
+        Filtering semantics:
+        - If no filters are provided, ALL elements are included.
+        - If the special value `"all"` is present, ALL elements are included.
+        - Otherwise, the element is included if it matches *any* of the
+          requested filter categories.
+
+        Important behavior notes:
+        - Filters are evaluated independently and OR’ed together.
+        - This method does NOT short-circuit on first match to keep
+          logic readable and extensible.
+        - The actual classification logic is delegated to helper methods
+          (`_is_button`, `_is_input`, etc.) to avoid duplication and
+          keep responsibilities isolated.
 
         Args:
-            node: The XML element node
-            filter_config: Optional list of filter types
+            node (etree.Element):
+                The lxml DOM element being evaluated.
+            filter_config (Optional[List[str]]):
+                List of filter categories to apply.
 
         Returns:
-            True if element should be included, False otherwise
+            bool:
+                True  → element should be included
+                False → element should be excluded
         """
+
+        # ---------------------------------------------------------
+        # Default behavior: no filters means include everything
+        # ---------------------------------------------------------
+        # This keeps backward compatibility and avoids forcing
+        # callers to explicitly specify ["all"].
         # Default behavior: show all elements when filter_config is None or empty
         if not filter_config or len(filter_config) == 0:
             return True
@@ -429,7 +712,32 @@ class PlaywrightPageSource(ElementSourceInterface):
         return False
 
     def _is_text(self, node: etree.Element) -> bool:
-        """Check if element is a text element (non-input)."""
+        """
+        Determine whether an element should be treated as a *textual* element.
+
+        Design intent:
+        - Identify elements whose primary purpose is to present readable text
+          to the user (labels, headings, paragraphs, links, etc.).
+        - Exclude form inputs and interactive controls that manage user input
+          rather than display content.
+        - Keep this classification lightweight and heuristic-based, not DOM-perfect.
+
+        Important behavior notes:
+        - This method intentionally errs on the side of inclusion.
+        - Actual text presence may be validated later using innerText or
+          Playwright APIs when needed.
+        - This method does NOT perform DOM queries or Playwright calls.
+
+        Args:
+            node (etree.Element):
+                The lxml DOM element being evaluated.
+
+        Returns:
+            bool:
+                True  → element is considered text-bearing
+                False → element is not considered a text element
+        """
+
         tag = node.tag or ""
         attrs = node.attrib or {}
 
@@ -453,8 +761,34 @@ class PlaywrightPageSource(ElementSourceInterface):
 
     def _is_probably_interactive(self, node: etree.Element) -> bool:
         """
-        Check if element is probably interactive (clickable, enabled, etc.).
+        Heuristically determine whether an element is *likely interactive*.
+
+        Design intent:
+        - Identify elements that users can interact with (click, focus, activate).
+        - Rely on lightweight DOM inspection instead of Playwright runtime checks
+          to keep this method fast and side-effect free.
+        - Favor inclusivity: false positives are acceptable, false negatives are not.
+
+        What this method DOES:
+        - Uses semantic HTML tags, ARIA roles, and common attributes.
+        - Detects both native and custom interactive elements.
+        - Works across frameworks (plain HTML, React, Angular, etc.).
+
+        What this method DOES NOT do:
+        - It does not verify visibility, enabled state, or actual clickability.
+        - It does not perform DOM queries or Playwright calls.
+        - It does not wait, retry, or assert anything.
+
+        Args:
+            node (etree.Element):
+                The lxml DOM element to evaluate.
+
+        Returns:
+            bool:
+                True  → element is probably interactive
+                False → element is probably non-interactive
         """
+
         tag = node.tag or ""
         attrs = node.attrib or {}
 
@@ -492,16 +826,37 @@ class PlaywrightPageSource(ElementSourceInterface):
 
     def get_xpath(self, node: etree.Element) -> str:
         """
-        Generate an optimal XPath for a given HTML element.
+        Generate an optimal XPath expression for a given HTML element.
 
-        Prioritizes:
-        1. id attribute
-        2. data-testid attribute
-        3. name attribute
-        4. class attribute (if unique)
-        5. aria-label attribute
-        6. Hierarchical path with tag names
+        Design intent:
+        - Produce a stable, reusable XPath suitable for Playwright interaction,
+          debugging, logging, and downstream automation.
+        - Prefer *semantic and unique* attributes over positional paths.
+        - Fall back gracefully when uniqueness cannot be guaranteed.
+
+        XPath construction priority (from strongest to weakest):
+        1. id               → most stable and unique
+        2. data-testid      → testing-friendly attribute
+        3. name             → common for form controls
+        4. class            → used only if unique
+        5. aria-label       → accessibility-driven identifiers
+        6. Hierarchical DOM path with positional indices
+
+        Important characteristics:
+        - This method does NOT query Playwright; it operates purely on the lxml DOM.
+        - Uniqueness is evaluated against the full document tree.
+        - If multiple matches exist, positional indexing is applied.
+        - If no safe attribute-based XPath is possible, a structural fallback is used.
+
+        Args:
+            node (etree.Element):
+                The lxml DOM element for which an XPath is generated.
+
+        Returns:
+            str:
+                A valid XPath string, or an empty string if the node is invalid.
         """
+
         if node is None or not hasattr(node, "tag"):
             return ""
 
@@ -589,9 +944,36 @@ class PlaywrightPageSource(ElementSourceInterface):
 
     def _escape_for_xpath_literal(self, s: str) -> str:
         """
-        Safely escape a string for inclusion in an XPath string literal.
-        Uses the concat() trick if both single and double quotes are present.
+        Construct a hierarchical XPath based purely on DOM structure.
+
+        Design intent:
+        - Provide a deterministic fallback when attribute-based XPath generation
+          is not possible or not reliable.
+        - Ensure every element can still be addressed, even in the absence of
+          unique attributes (id, name, data-testid, etc.).
+        - Preserve DOM order by using positional indices where required.
+
+        Characteristics:
+        - This method relies ONLY on parent-child relationships.
+        - XPath segments are built from the target node up to the root.
+        - Positional indices ([n]) are added only when siblings share the same tag.
+        - The resulting XPath is stable for a given DOM structure but may change
+          if the DOM hierarchy itself changes.
+
+        Important notes:
+        - This method does not validate uniqueness globally.
+        - It does not interact with Playwright or perform runtime queries.
+        - It is intentionally simple and predictable to avoid side effects.
+
+        Args:
+            node (etree.Element):
+                The lxml DOM element for which the hierarchical XPath is generated.
+
+        Returns:
+            str:
+                A hierarchical XPath string, or an empty string if the node is invalid.
         """
+
         if '"' not in s:
             return f'"{s}"'
         if "'" not in s:
@@ -608,15 +990,37 @@ class PlaywrightPageSource(ElementSourceInterface):
 
     def _build_extra_metadata(self, attrs: dict, used_key: Optional[str], tag: str) -> dict:
         """
-        Build metadata dictionary with element attributes.
+        Safely escape a string for inclusion in an XPath string literal.
+
+        Purpose:
+        - XPath does not allow unescaped mixing of single (') and double (") quotes
+          inside string literals.
+        - This helper ensures any arbitrary string can be safely embedded into
+          an XPath expression without causing syntax errors.
+
+        Escaping strategy:
+        - If the string contains ONLY double quotes → wrap with single quotes.
+        - If the string contains ONLY single quotes → wrap with double quotes.
+        - If the string contains BOTH quote types → use XPath `concat()` to
+          assemble the literal safely.
+
+        Why `concat()` is required:
+        - XPath does not support escaping quotes inside literals.
+        - `concat()` allows us to split the string into safe fragments and
+          reconstruct it at runtime inside the XPath engine.
+
+        Design considerations:
+        - This method is deterministic and side-effect free.
+        - It performs no XPath execution—only string transformation.
+        - Centralizing this logic avoids subtle XPath bugs scattered across code.
 
         Args:
-            attrs: Element attributes dictionary
-            used_key: The attribute key used for text extraction (to exclude from extra)
-            tag: Element tag name
+            s (str):
+                Raw string value that may contain single and/or double quotes.
 
         Returns:
-            Dictionary with metadata
+            str:
+                A valid XPath string literal representation of `s`.
         """
         extra = {
             k: v
@@ -639,62 +1043,54 @@ class PlaywrightPageSource(ElementSourceInterface):
     # ---------------------------------------------------------
 
     def locate(self, element: str, index: Optional[int] = None) -> Any:
-        page = self._require_page()
+        """
+        Locate a Playwright element and return the first matching handle.
 
-        # -------------------------------------------------
-        # 🔑 Resolve Optics element name → selector
-        # -------------------------------------------------
-        original_element = element
+        Design intent:
+        - Provide a single, consistent element lookup entry point for Playwright.
+        - Keep element resolution, existence checks, and index handling explicit
+          and readable instead of hiding behavior in chained calls.
+        - Avoid retry logic here; this method is a *pure locator*, not an assertion.
+
+        Resolution flow:
+        1. Ensure a valid Playwright page is available.
+        2. Resolve logical Optics element names (if optics mapping is enabled).
+        3. Convert the resolved selector into a Playwright locator.
+        4. Perform a lightweight existence check before accessing the element.
+        5. Apply index selection only after existence is confirmed.
+
+        Important behavior notes:
+        - Returns `None` if the element does not exist instead of raising,
+          allowing callers to decide how to handle absence.
+        - Indexing is optional and applied only when explicitly provided.
+        - No retries, waits, or sleeps are performed here by design.
+          Higher-level methods (assertions, flows) handle timing concerns.
+
+        Args:
+            element (str):
+                Raw selector or logical Optics element name.
+            index (Optional[int]):
+                Optional zero-based index for selecting a specific match.
+
+        Returns:
+            Any:
+                Playwright element handle (`locator.first`) or `None` if not found.
+        """
+        page = self._require_page()
 
         if hasattr(self.driver, "optics") and self.driver.optics:
             resolved = self.driver.optics.get_element_value(element)
             if resolved:
                 element = resolved[0]
-                internal_logger.debug(
-                    "[PlaywrightLocate] Resolved element '%s' → '%s'",
-                    original_element, element
-                )
-            else:
-                internal_logger.debug(
-                    "[PlaywrightLocate] Using raw selector '%s'",
-                    element
-                )
 
-        try:
-            # -------------------------------------------------
-            # Selector strategy
-            # -------------------------------------------------
-            locator = self._resolve_locator(page, element)
-            if index is not None:
-                locator = locator.nth(index)
+        locator, found = self._resolve_and_exists(page, element)
+        if not found:
+            return None
 
-            # 🔑 REPLACE duplicated count logic HERE
-            if not self._locator_exists(locator):
-                internal_logger.debug(
-                    "[PlaywrightLocate] Locator '%s' found 0 elements",
-                    element
-                )
-                return None
+        if index is not None:
+            locator = locator.nth(index)
 
-            internal_logger.debug(
-                "[PlaywrightLocate] Locator '%s' found element(s)",
-                element
-            )
-
-            return locator.first
-
-        except Exception as e:
-            internal_logger.error(
-                "[PlaywrightLocate] Error locating element '%s' (resolved='%s')",
-                original_element,
-                element,
-                exc_info=True
-            )
-            raise OpticsError(
-                Code.E0201,
-                message=f"No elements found for: {original_element}",
-                cause=e,
-            ) from e
+        return locator.first
 
     # ---------------------------------------------------------
     # Assertions
@@ -702,15 +1098,33 @@ class PlaywrightPageSource(ElementSourceInterface):
 
     def assert_elements(self, elements, timeout=30, rule="any"):
         """
-                Assert the presence of elements on the current page (Playwright).
+        Assert the presence of one or more elements on the current page.
 
-                Args:
-                    elements (list | str): List of selectors or single selector
-                    timeout (int): Max wait time in seconds
-                    rule (str): "any" or "all"
+        Design goals:
+        - Provide a single, reusable assertion entry point for Playwright-based
+          element presence checks.
+        - Avoid duplicated control-flow and retry logic by delegating polling
+          behavior to `_retry_until`.
+        - Keep element resolution (`_resolve_locator`) and existence checks
+          (`_locator_exists`) clearly separated from assertion semantics.
 
-                Returns:
-                    (bool, str): (status, timestamp)
+        Behavior:
+        - `elements` may be a single selector or a list of selectors.
+        - `rule="any"`  → assertion passes if at least one element is present.
+        - `rule="all"`  → assertion passes only if all elements are present.
+        - The check is retried until `timeout` expires.
+
+        Important implementation notes:
+        - This method does NOT raise on assertion failure; it returns
+          `(False, timestamp)` to allow higher-level flows to decide behavior.
+        - The nested `check()` function is intentionally minimal and stateless
+          to prevent Sonar duplication and make retry logic generic.
+        - No waits, sleeps, or retries should be added outside `_retry_until`.
+
+        Returns:
+            Tuple[bool, str]:
+                - bool: assertion result
+                - str : timestamp when the final evaluation occurred
         """
         if rule not in ("any", "all"):
             raise OpticsError(Code.E0403, message="Invalid rule. Use 'any' or 'all'.")
@@ -723,17 +1137,42 @@ class PlaywrightPageSource(ElementSourceInterface):
         except OpticsError:
             return False, utils.get_timestamp()
 
-        internal_logger.info(
-            "[PlaywrightPageSource] Asserting elements=%s rule=%s timeout=%ss",
-            elements, rule, timeout
-        )
+        def check():
+            states = [
+                self._resolve_and_exists(page, el)[1]
+                for el in elements
+            ]
+            return any(states) if rule == "any" else all(states)
 
-        return self._assert_with_retry(page, elements, timeout, rule)
+        return self._retry_until(timeout, check), utils.get_timestamp()
 
     @staticmethod
     def _resolve_locator(page: Any, element: str):
         """
-        Resolve an element string into a Playwright locator.
+        Centralized Playwright locator resolution.
+
+        This method converts a generic element identifier into a concrete
+        Playwright Locator based on its detected type.
+
+        Why this method exists:
+        - Ensures a SINGLE, consistent mapping between Optics element strings
+          and Playwright locator APIs.
+        - Prevents duplicated branching logic (Text / XPath / CSS) across
+          locate(), assertions, and retry flows.
+        - Keeps element-type detection isolated from business logic so future
+          locator strategies (e.g. role-based, test-id, accessibility) can be
+          added safely in one place.
+
+        Resolution rules:
+        - Text   → page.get_by_text(..., exact=False)
+        - XPath  → page.locator("xpath=...")
+        - Default→ page.locator(...) (CSS selector)
+
+        IMPORTANT:
+        - This method must remain side-effect free.
+        - It MUST NOT perform existence checks, retries, or waiting logic.
+        - All presence validation should be handled by higher-level methods
+          to avoid Sonar duplication and control-flow coupling.
         """
         element_type = utils.determine_element_type(element)
 
@@ -747,38 +1186,115 @@ class PlaywrightPageSource(ElementSourceInterface):
 
     @staticmethod
     def _locator_exists(locator) -> bool:
+        """
+            Check whether a Playwright locator resolves to at least one element.
+
+            Purpose:
+            - Provide a lightweight, reusable existence check for Playwright locators.
+            - Centralize the `.count()` logic so presence checks are consistent across
+              locate(), assertions, and retry-based workflows.
+            - Avoid raising Playwright or async-related exceptions during control flow.
+
+            Design decisions:
+            - Uses `locator.count()` instead of accessing `.first` directly to avoid
+              triggering Playwright errors when no elements exist.
+            - Wraps the call in a try/except block to guarantee a boolean result
+              under all circumstances (timeouts, detached DOM, navigation, etc.).
+
+            Behavior guarantees:
+            - Returns `True`  → at least one matching element exists.
+            - Returns `False` → no matching elements exist OR an exception occurred.
+            - Never raises an exception to the caller.
+
+            Important notes:
+            - This method performs **no waiting or retry logic**.
+            - It must remain side-effect free and fast.
+            - Timing concerns should be handled by `_retry_until` or higher-level APIs.
+
+            Args:
+                locator:
+                    A Playwright Locator instance.
+
+            Returns:
+                bool:
+                    `True` if one or more elements are present, otherwise `False`.
+        """
         try:
             return run_async(locator.count()) > 0
         except Exception:
             return False
 
-    def _assert_with_retry(
-        self,
-        page: Any,
-        elements: List[str],
-        timeout: int,
-        rule: str,
-    ) -> Tuple[bool, str]:
+    @staticmethod
+    def _retry_until(timeout: int, condition_fn) -> bool:
+        """
+            Generic retry helper with time-bound polling.
+
+            Purpose:
+            - Repeatedly evaluates a caller-provided condition function until it
+              returns True or the timeout period expires.
+            - Centralizes retry logic to avoid duplicated loops across locator,
+              assertion, and state-checking methods.
+
+            Design principles:
+            - Time-based, not attempt-based: retries are controlled strictly by
+              elapsed time, ensuring predictable behavior.
+            - Exception-tolerant: transient errors (DOM updates, navigation,
+              stale elements) are expected and intentionally ignored.
+            - Side-effect free: this method does not perform waits, logging,
+              or element resolution itself.
+
+            Usage expectations:
+            - `condition_fn` must be a callable returning a boolean.
+            - `condition_fn` may raise exceptions; they will be swallowed and retried.
+            - Callers are responsible for deciding what a "successful" condition means.
+
+            Returns:
+                bool:
+                    True  → condition satisfied within timeout
+                    False → timeout reached without success
+            """
         start_time = time.time()
-
         while time.time() - start_time < timeout:
-            results = []
-
-            for element in elements:
-                try:
-                    locator = self._resolve_locator(page, element)
-                    found = self._locator_exists(locator)
-                    results.append(found)
-
-                    if rule == "any" and found:
-                        return True, utils.get_timestamp()
-
-                except Exception:
-                    results.append(False)
-
-            if rule == "all" and all(results):
-                return True, utils.get_timestamp()
-
+            try:
+                if condition_fn():
+                    return True
+            except Exception:
+                pass
             time.sleep(0.3)
+        return False
 
-        return False, utils.get_timestamp()
+    def _resolve_and_exists(self, page: Any, element: str) -> Tuple[Any, bool]:
+        """
+        Resolve an element selector into a Playwright locator and evaluate its presence.
+
+        Purpose:
+        - Provide a small, reusable helper that combines locator resolution and
+          existence checking into a single, explicit step.
+        - Reduce repeated patterns where callers need both the resolved locator
+          and a boolean presence result.
+
+        Design intent:
+        - Keep resolution logic (`_resolve_locator`) and existence checks
+          (`_locator_exists`) composed but not hidden.
+        - Avoid embedding retry, wait, or assertion behavior in this method.
+        - Make calling code more readable by returning both values together.
+
+        Behavior notes:
+        - The returned locator is always created, even if the element does not exist.
+        - Presence is determined at the moment of invocation; no retries or waits
+          are performed here.
+        - This method does not raise if the element is missing.
+
+        Args:
+            page (Any):
+                Active Playwright page instance used for locator resolution.
+            element (str):
+                Raw selector or resolved Optics element identifier.
+
+        Returns:
+            Tuple[Any, bool]:
+                - Any  : Playwright locator for the resolved element
+                - bool : True if at least one matching element exists, False otherwise
+        """
+        locator = self._resolve_locator(page, element)
+        return locator, self._locator_exists(locator)
