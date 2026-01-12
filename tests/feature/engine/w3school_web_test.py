@@ -109,6 +109,7 @@ def test_youtube_search_and_play(optics_instance):
     # optics.assert_presence("Wild stone Edge perfume review")
 
     optics.sleep("10")
+    optics.quit()
 
 if __name__ == "__main__":
     import pytest
