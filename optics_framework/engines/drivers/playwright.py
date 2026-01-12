@@ -244,35 +244,10 @@ class Playwright(DriverInterface):
             delta
         )
 
-    # def scroll(self, direction: str, duration: int, event_name=None):
-    #     delta = duration if direction == "down" else -duration
-    #     execution_logger.debug(
-    #             "[Playwright] scroll direction=%s pixels=%d",
-    #             direction, delta
-    #         )
-    #     run_async(self.page.mouse.wheel(0, delta))
-
     def scroll(self, direction: str = "down", pixels: int = 120, event_name=None):
         for _ in range(2):
             run_async(self.page.mouse.wheel(0, pixels if direction == "down" else -pixels))
             run_async(self.page.wait_for_timeout(120))
-
-    # def scroll(self, direction: str, pixels: int, event_name=None):
-    #     execution_logger.debug(
-    #         "[Playwright] scroll direction=%s pixels=%d",
-    #         direction, pixels
-    #     )
-    #     run_async(self._scroll_async(direction, pixels))
-
-    # async def _scroll_async(self, direction: str, pixels: int):
-    #     if direction == "down":
-    #         await self.page.evaluate(
-    #             "(p) => window.scrollBy(0, p)", pixels
-    #         )
-    #     else:
-    #         await self.page.evaluate(
-    #             "(p) => window.scrollBy(0, -p)", pixels
-    #         )
 
     # =====================================================
     # GETTERS / TERMINATION
