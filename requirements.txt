@@ -19,3 +19,4 @@ sse-starlette~=3.0.3
 textual~=6.12.0
 selenium~=4.39.0
 lxml~=6.0.2
+
