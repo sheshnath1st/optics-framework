@@ -43,6 +43,12 @@ def test_youtube_launch(optics):
     optics.assert_presence('//input[@name="search_query"]')
 
 
+def test_youtube_click_search_box(optics):
+    """
+    Verify search box can be clicked
+    """
+    optics.press_element('//input[@name="search_query"]')
+
 if __name__ == "__main__":
     import pytest
     pytest.main([
