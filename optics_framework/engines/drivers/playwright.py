@@ -278,8 +278,14 @@ class Playwright(DriverInterface):
     # GETTERS / TERMINATION
     # =====================================================
 
-    def get_text_element(self, element: str) -> str:
-        return run_async(self.page.locator(element).inner_text())
+    def get_text_element(self, element) -> str:
+        # Accept both selector string and Locator
+        if isinstance(element, Locator):
+            locator = element
+        else:
+            locator = self.page.locator(element)
+
+        return run_async(locator.inner_text())
 
     def force_terminate_app(self, app_name: str, event_name=None):
         raise NotImplementedError("force_terminate_app not supported")
