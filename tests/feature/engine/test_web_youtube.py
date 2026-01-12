@@ -2,7 +2,6 @@ import os
 import yaml
 import pytest
 
-from optics_framework.common.async_utils import run_async
 from optics_framework.optics import Optics
 
 
