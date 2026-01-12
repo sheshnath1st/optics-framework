@@ -56,6 +56,15 @@ def test_youtube_click_search_box_and_sleep(optics):
     optics.press_element('//input[@name="search_query"]')
     optics.sleep("2")
 
+def test_youtube_search(optics):
+    """
+    Enter search text and submit
+    """
+    optics.press_element('//input[@name="search_query"]')
+    optics.enter_text_using_keyboard("Wild Stone Edge Perfume Review")
+    optics.sleep("2")
+    optics.press_keycode("Enter")
+    optics.sleep("2")
 
 
 if __name__ == "__main__":
