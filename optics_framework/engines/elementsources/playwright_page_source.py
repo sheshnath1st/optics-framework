@@ -92,8 +92,6 @@ class PlaywrightPageSource(ElementSourceInterface):
         page = self._require_page()
         internal_logger.error("trying get_page_source _require_page ..............")
         timestamp = utils.get_timestamp()
-
-        # html = run_async(page.content()) # page.content()
         html: str = run_async(page.content())
         internal_logger.debug(
             "[PlaywrightPageSource] Page source fetched, length=%d",
@@ -210,7 +208,8 @@ class PlaywrightPageSource(ElementSourceInterface):
             )
             return None
 
-    def _build_simple_xpath(self, node: etree.Element) -> Optional[str]:
+    @staticmethod
+    def _build_simple_xpath(node: etree.Element) -> Optional[str]:
         """
         Build a simple XPath for locating an element in Playwright.
         This is a fallback method for getting bounds.
@@ -703,15 +702,15 @@ class PlaywrightPageSource(ElementSourceInterface):
 
     def assert_elements(self, elements, timeout=30, rule="any"):
         """
-        Assert the presence of elements on the current page (Playwright).
+                Assert the presence of elements on the current page (Playwright).
 
-        Args:
-            elements (list | str): List of selectors or single selector
-            timeout (int): Max wait time in seconds
-            rule (str): "any" or "all"
+                Args:
+                    elements (list | str): List of selectors or single selector
+                    timeout (int): Max wait time in seconds
+                    rule (str): "any" or "all"
 
-        Returns:
-            (bool, str): (status, timestamp)
+                Returns:
+                    (bool, str): (status, timestamp)
         """
         if rule not in ("any", "all"):
             raise OpticsError(Code.E0403, message="Invalid rule. Use 'any' or 'all'.")
@@ -719,54 +718,17 @@ class PlaywrightPageSource(ElementSourceInterface):
         if isinstance(elements, str):
             elements = [elements]
 
-        # Check if driver is initialized before entering the loop
         try:
             page = self._require_page()
         except OpticsError:
-            # If driver is not initialized, return False immediately instead of looping
             return False, utils.get_timestamp()
-
-        start_time = time.time()
 
         internal_logger.info(
             "[PlaywrightPageSource] Asserting elements=%s rule=%s timeout=%ss",
             elements, rule, timeout
         )
 
-        while time.time() - start_time < timeout:
-            results = []
-
-            for element in elements:
-                try:
-                    internal_logger.debug(
-                        "[PlaywrightPageSource] Checking element '%s'",
-                        element
-                    )
-
-                    locator = self._resolve_locator(page, element)
-                    found = self._locator_exists(locator)
-                    results.append(found)
-
-                    if rule == "any" and found:
-                        return True, utils.get_timestamp()
-
-                except Exception as e:
-                    internal_logger.debug(
-                        "[PlaywrightPageSource] Error checking '%s': %s",
-                        element, str(e)
-                    )
-                    results.append(False)
-
-            if rule == "all" and all(results):
-                return True, utils.get_timestamp()
-
-            time.sleep(0.3)
-
-        internal_logger.warning(
-            "[PlaywrightPageSource] Timeout reached. rule=%s elements=%s",
-            rule, elements
-        )
-        return False, utils.get_timestamp()
+        return self._assert_with_retry(page, elements, timeout, rule)
 
     @staticmethod
     def _resolve_locator(page: Any, element: str):
@@ -789,3 +751,34 @@ class PlaywrightPageSource(ElementSourceInterface):
             return run_async(locator.count()) > 0
         except Exception:
             return False
+
+    def _assert_with_retry(
+        self,
+        page: Any,
+        elements: List[str],
+        timeout: int,
+        rule: str,
+    ) -> Tuple[bool, str]:
+        start_time = time.time()
+
+        while time.time() - start_time < timeout:
+            results = []
+
+            for element in elements:
+                try:
+                    locator = self._resolve_locator(page, element)
+                    found = self._locator_exists(locator)
+                    results.append(found)
+
+                    if rule == "any" and found:
+                        return True, utils.get_timestamp()
+
+                except Exception:
+                    results.append(False)
+
+            if rule == "all" and all(results):
+                return True, utils.get_timestamp()
+
+            time.sleep(0.3)
+
+        return False, utils.get_timestamp()
