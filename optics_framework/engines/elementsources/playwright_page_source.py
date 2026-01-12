@@ -739,17 +739,12 @@ class PlaywrightPageSource(ElementSourceInterface):
             for element in elements:
                 try:
                     internal_logger.debug(
-                        "testttttt [PlaywrightPageSource] Element '%s'",
+                        "[PlaywrightPageSource] Checking element '%s'",
                         element
                     )
-                    locator = self._resolve_locator(page,element)
-                    internal_logger.debug(
-                        "[PlaywrightPageSource] Element '%s'",
-                        element
-                    )
-                    # Use run_async to await async Playwright methods
-                    count = run_async(locator.count())
-                    found = count > 0
+
+                    locator = self._resolve_locator(page, element)
+                    found = self._locator_exists(locator)
                     results.append(found)
 
                     if rule == "any" and found:
@@ -760,8 +755,6 @@ class PlaywrightPageSource(ElementSourceInterface):
                         "[PlaywrightPageSource] Error checking '%s': %s",
                         element, str(e)
                     )
-                    # Don't call get_page_source() in exception handler as it may also fail
-                    # Just mark as not found
                     results.append(False)
 
             if rule == "all" and all(results):
