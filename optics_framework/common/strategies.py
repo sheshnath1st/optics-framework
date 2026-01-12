@@ -131,7 +131,8 @@ class TextElementStrategy(LocatorStrategy):
 
     @staticmethod
     def supports(element_type: str, element_source: ElementSourceInterface) -> bool:
-        return element_type == "Text" and LocatorStrategy._is_method_implemented(element_source, "locate")
+        # Support both Text and CSS types since element sources handle CSS selectors
+        return element_type in ("Text", "CSS") and LocatorStrategy._is_method_implemented(element_source, "locate")
 
 class TextDetectionStrategy(LocatorStrategy):
     """Strategy for locating text elements using text detection."""
@@ -147,6 +148,8 @@ class TextDetectionStrategy(LocatorStrategy):
         return self._element_source
 
     def locate(self, element: str, index: int = 0) -> Union[object, Tuple[int, int]]:
+        if self.text_detection is None:
+            raise OpticsError(Code.E0201, message="Text detection is not available.")
         screenshot = self.element_source.capture()
         _, coor, _ = self.text_detection.find_element(screenshot, element, index=index)
         return coor
@@ -162,6 +165,8 @@ class TextDetectionStrategy(LocatorStrategy):
         :param aoi_height: Height percentage of AOI (0-100)
         :return: Coordinates relative to the full screenshot
         """
+        if self.text_detection is None:
+            raise OpticsError(Code.E0201, message="Text detection is not available.")
         # Capture full screenshot
         full_screenshot = self.element_source.capture()
 
@@ -190,6 +195,8 @@ class TextDetectionStrategy(LocatorStrategy):
             raise OpticsError(Code.E0205, message=f"Coordinate adjustment failed: {e}")
 
     def assert_elements(self, elements: list, timeout: int = 30, rule: str = 'any') -> Tuple[bool, Optional[str]]:
+        if self.text_detection is None:
+            raise OpticsError(Code.E0201, message="Text detection is not available.")
         end_time = time.time() + timeout
         found_status = dict.fromkeys(elements, False)
         result = False

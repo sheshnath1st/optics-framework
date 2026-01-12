@@ -1,8 +1,9 @@
 import asyncio
 import threading
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeoutError
 from typing import Any, Coroutine
 from optics_framework.common.logging_config import internal_logger
+from optics_framework.common.error import OpticsError, Code
 
 _persistent_loop: asyncio.AbstractEventLoop | None = None
 _loop_thread: threading.Thread | None = None
@@ -45,23 +46,24 @@ def run_async(coro: Coroutine[Any, Any, Any]):
     """
 
     try:
-        running_loop = asyncio.get_running_loop()
+        asyncio.get_running_loop()
     except RuntimeError:
-        running_loop = None
+        pass
 
-    # 🔹 Case 1: No running loop → use persistent background loop
-    if running_loop is None:
-        loop = _get_or_create_persistent_loop()
-        future = asyncio.run_coroutine_threadsafe(coro, loop)
-        return future.result(timeout=30)
-
-    # 🔹 Case 2: Running loop exists → avoid deadlock
-    internal_logger.debug(
-        "[AsyncUtils] Running loop detected → offloading to executor"
-    )
-
-    def _submit():
-        future = asyncio.run_coroutine_threadsafe(coro, running_loop)
-        return future.result(timeout=30)
-
-    return _executor.submit(_submit).result(timeout=30)
+    # 🔹 Always use persistent background loop to avoid deadlocks when called from async context
+    # When called from FastAPI/async context, using the running loop causes deadlocks because
+    # we're blocking synchronously while waiting for a coroutine scheduled on the same loop
+    loop = _get_or_create_persistent_loop()
+    future = asyncio.run_coroutine_threadsafe(coro, loop)
+    try:
+        return future.result(timeout=120)  # Increased timeout for browser operations
+    except (TimeoutError, FutureTimeoutError) as e:
+        # Cancel the coroutine if it's still running to prevent it from continuing
+        if not future.done():
+            future.cancel()
+        raise OpticsError(Code.E0102, f"Async operation timed out after 120 seconds: {str(e) or 'Operation exceeded timeout limit'}", cause=e)
+    except Exception:
+        # Cancel the coroutine if it's still running to prevent it from continuing
+        if not future.done():
+            future.cancel()
+        raise

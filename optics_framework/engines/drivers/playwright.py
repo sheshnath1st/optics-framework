@@ -1,3 +1,4 @@
+import asyncio
 from typing import Optional
 from playwright.async_api import async_playwright, Page
 from optics_framework.common.driver_interface import DriverInterface
@@ -54,7 +55,13 @@ class Playwright(DriverInterface):
             internal_logger.info("[Playwright] Application launched")
             return "PLAYWRIGHT_SESSION"
 
+        except asyncio.CancelledError:
+            # Clean up resources if coroutine is cancelled
+            await self._cleanup_resources()
+            raise
         except Exception as e:
+            # Clean up any partially initialized resources on error
+            await self._cleanup_resources()
             internal_logger.error("[Playwright] Launch failed", exc_info=True)
             raise OpticsError(Code.E0102, str(e), cause=e)
 
@@ -254,17 +261,76 @@ class Playwright(DriverInterface):
     def terminate(self):
         run_async(self._terminate_async())
 
+    async def _cleanup_resources(self):
+        """Clean up partially initialized resources on error or cancellation."""
+        try:
+            if self.page:
+                await self.page.close()
+                self.page = None
+            if self._context:
+                await self._context.close()
+                self._context = None
+            if self._browser:
+                await self._browser.close()
+                self._browser = None
+            if self._pw:
+                await self._pw.stop()
+                self._pw = None
+        except Exception as cleanup_error:
+            internal_logger.warning(f"[Playwright] Error during cleanup: {cleanup_error}")
+
     async def _terminate_async(self):
         internal_logger.info("[Playwright] Terminating session")
 
-        if self.page:
-            await self.page.close()
-        if self._context:
-            await self._context.close()
-        if self._browser:
-            await self._browser.close()
-        if self._pw:
-            await self._pw.stop()
+        try:
+            # Close page first
+            if self.page:
+                try:
+                    await self.page.close()
+                except Exception as e:
+                    internal_logger.debug(f"[Playwright] Error closing page: {e}")
+                finally:
+                    self.page = None
+
+            # Close context (this will close all pages in the context)
+            if self._context:
+                try:
+                    await self._context.close()
+                except Exception as e:
+                    internal_logger.debug(f"[Playwright] Error closing context: {e}")
+                finally:
+                    self._context = None
+
+            # Close browser (this will close all contexts and windows)
+            if self._browser:
+                try:
+                    await self._browser.close()
+                except Exception as e:
+                    internal_logger.debug(f"[Playwright] Error closing browser: {e}")
+                finally:
+                    self._browser = None
+
+            # Stop Playwright
+            if self._pw:
+                try:
+                    await self._pw.stop()
+                except Exception as e:
+                    internal_logger.debug(f"[Playwright] Error stopping Playwright: {e}")
+                finally:
+                    self._pw = None
+
+            # Send all events if event_sdk is available
+            if self.event_sdk:
+                self.event_sdk.send_all_events()
+
+            internal_logger.info("[Playwright] Session terminated successfully")
+        except Exception as e:
+            internal_logger.warning(f"[Playwright] Error during termination: {e}")
+            # Ensure cleanup even if there's an error
+            self.page = None
+            self._context = None
+            self._browser = None
+            self._pw = None
 
     def get_driver_session_id(self):
         return None
