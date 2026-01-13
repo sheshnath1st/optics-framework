@@ -486,92 +486,6 @@ class PlaywrightPageSource(ElementSourceInterface):
         parts = val.split("'")
         return "concat('" + "', \"'\", '".join(parts) + "')"
 
-    @staticmethod
-    def _build_simple_xpath1(node: etree.Element) -> Optional[str]:
-        """
-        Build a minimal, Playwright-compatible XPath for a given DOM node.
-
-        Design intent:
-        - Provide a *best-effort* XPath that is simple, readable, and fast to resolve.
-        - Prefer stable, unique attributes over deep DOM traversal.
-        - Act strictly as a fallback mechanism for operations like bounding-box
-          calculation where a locator is required but precision is not critical.
-
-        Why this method is intentionally "simple":
-        - It is NOT meant to generate a perfectly unique or future-proof XPath.
-        - It avoids expensive document-wide uniqueness checks.
-        - It prioritizes speed and resilience over absolute accuracy.
-        - More advanced XPath generation is handled elsewhere (`get_xpath`).
-
-        Resolution strategy (in order):
-        1. Use `id` attribute if present (most reliable and unique).
-        2. Use `data-testid` if available (common in test-friendly UIs).
-        3. Use `name` attribute when applicable.
-        4. Fall back to a hierarchical tag-based XPath with positional indexes.
-
-        Important behavior notes:
-        - Returned XPath may match multiple elements; callers must handle this.
-        - The XPath is always absolute (`//` or `/`) for Playwright compatibility.
-        - If the node cannot be resolved meaningfully, `None` is returned.
-        - This method performs NO validation against the live DOM.
-
-        Args:
-            node (etree.Element):
-                lxml DOM element for which an XPath is required.
-
-        Returns:
-            Optional[str]:
-                A simple XPath string or None if it cannot be constructed.
-        """
-        if node is None or not hasattr(node, "tag"):
-            return None
-
-        tag = node.tag or "*"
-        attrs = node.attrib or {}
-
-        # Helper to escape single quotes in XPath
-        def escape_xpath_value(val: str) -> str:
-            if "'" not in val:
-                return f"'{val}'"
-            # Use concat for values with single quotes
-            parts = val.split("'")
-            return "concat('" + "', \"'\", '".join(parts) + "')"
-
-        # Try id first (most unique)
-        if "id" in attrs and attrs["id"]:
-            escaped_id = escape_xpath_value(attrs["id"])
-            return f"//{tag}[@id={escaped_id}]"
-
-        # Try data-testid
-        if "data-testid" in attrs and attrs["data-testid"]:
-            escaped_testid = escape_xpath_value(attrs["data-testid"])
-            return f"//{tag}[@data-testid={escaped_testid}]"
-
-        # Try name
-        if "name" in attrs and attrs["name"]:
-            escaped_name = escape_xpath_value(attrs["name"])
-            return f"//{tag}[@name={escaped_name}]"
-
-        # Fallback to hierarchical path with index
-        path = []
-        current = node
-        while current is not None and hasattr(current, "tag"):
-            parent = current.getparent()
-            if parent is None:
-                path.insert(0, current.tag or "*")
-                break
-
-            siblings = [sib for sib in parent if sib.tag == current.tag]
-            if len(siblings) > 1:
-                idx = siblings.index(current) + 1
-                path.insert(0, f"{current.tag}[{idx}]")
-            else:
-                path.insert(0, current.tag or "*")
-
-            current = parent
-
-        return "/" + "/".join(path) if path else None
-
     def _extract_display_text(
             self,
             node: etree.Element,
@@ -671,25 +585,21 @@ class PlaywrightPageSource(ElementSourceInterface):
 
         return None, None
 
-
     def _should_include_element(self, node: etree.Element, filter_config: Optional[List[str]]) -> bool:
         """
         Decide whether a DOM element should be included in the result set
         based on the provided filter configuration.
-
         Design intent:
         - Provide a flexible, declarative filtering mechanism for element
           extraction without hard-coding behavior at call sites.
         - Allow callers to request *categories* of elements (buttons, inputs,
           images, etc.) instead of dealing with raw DOM rules.
         - Keep this method purely deterministic and side-effect free.
-
         Filtering semantics:
         - If no filters are provided, ALL elements are included.
         - If the special value `"all"` is present, ALL elements are included.
         - Otherwise, the element is included if it matches *any* of the
           requested filter categories.
-
         Important behavior notes:
         - Filters are evaluated independently and OR’ed together.
         - This method does NOT short-circuit on first match to keep
@@ -697,13 +607,11 @@ class PlaywrightPageSource(ElementSourceInterface):
         - The actual classification logic is delegated to helper methods
           (`_is_button`, `_is_input`, etc.) to avoid duplication and
           keep responsibilities isolated.
-
         Args:
             node (etree.Element):
                 The lxml DOM element being evaluated.
             filter_config (Optional[List[str]]):
                 List of filter categories to apply.
-
         Returns:
             bool:
                 True  → element should be included
@@ -726,25 +634,20 @@ class PlaywrightPageSource(ElementSourceInterface):
         # Check each filter type
         matches_any = False
 
-        if "interactive" in filter_config:
-            if self._is_probably_interactive(node):
-                matches_any = True
+        if "interactive" in filter_config and self._is_probably_interactive(node):
+            matches_any = True
 
-        if "buttons" in filter_config:
-            if self._is_button(node):
-                matches_any = True
+        if "buttons" in filter_config and self._is_button(node):
+            matches_any = True
 
-        if "inputs" in filter_config:
-            if self._is_input(node):
-                matches_any = True
+        if "inputs" in filter_config and self._is_input(node):
+            matches_any = True
 
-        if "images" in filter_config:
-            if self._is_image(node):
-                matches_any = True
+        if "images" in filter_config and self._is_image(node):
+            matches_any = True
 
-        if "text" in filter_config:
-            if self._is_text(node):
-                matches_any = True
+        if "text" in filter_config and self._is_text(node):
+            matches_any = True
 
         return matches_any
 
@@ -915,91 +818,78 @@ class PlaywrightPageSource(ElementSourceInterface):
           debugging, logging, and downstream automation.
         - Prefer *semantic and unique* attributes over positional paths.
         - Fall back gracefully when uniqueness cannot be guaranteed.
-
-        XPath construction priority (from strongest to weakest):
-        1. id               → most stable and unique
-        2. data-testid      → testing-friendly attribute
-        3. name             → common for form controls
-        4. class            → used only if unique
-        5. aria-label       → accessibility-driven identifiers
-        6. Hierarchical DOM path with positional indices
-
-        Important characteristics:
-        - This method does NOT query Playwright; it operates purely on the lxml DOM.
-        - Uniqueness is evaluated against the full document tree.
-        - If multiple matches exist, positional indexing is applied.
-        - If no safe attribute-based XPath is possible, a structural fallback is used.
-
-        Args:
-            node (etree.Element):
-                The lxml DOM element for which an XPath is generated.
-
-        Returns:
-            str:
-                A valid XPath string, or an empty string if the node is invalid.
         """
-
         if node is None or not hasattr(node, "tag"):
             return ""
 
+        # 1️⃣ Attribute-based strategies (strong → weak)
+        xpath = self._try_attribute_xpaths(
+            node,
+            primary_attrs=("id", "data-testid", "name"),
+            secondary_attrs=("class", "aria-label", "title"),
+        )
+        if xpath:
+            return xpath
+
+        # 2️⃣ Structural fallback
+        return self._build_hierarchical_xpath(node)
+
+    def _try_attribute_xpaths(
+            self,
+            node: etree.Element,
+            primary_attrs: tuple,
+            secondary_attrs: tuple,
+    ) -> Optional[str]:
+        for attr in primary_attrs:
+            xpath = self._build_and_validate_attr_xpath(node, attr)
+            if xpath:
+                return xpath
+
+        for attr in secondary_attrs:
+            xpath = self._build_and_validate_attr_xpath(node, attr)
+            if xpath:
+                return xpath
+
+        return None
+
+    def _build_and_validate_attr_xpath(
+            self,
+            node: etree.Element,
+            attr_name: str,
+    ) -> Optional[str]:
         tag = node.tag or "*"
-        attrs = node.attrib or {}
+        value = node.attrib.get(attr_name)
+
+        if not value:
+            return None
+
+        xpath = f"//{tag}[@{attr_name}={self._escape_for_xpath_literal(value)}]"
+        return self._ensure_xpath_uniqueness(node, xpath)
+
+    def _ensure_xpath_uniqueness(
+            self,
+            node: etree.Element,
+            xpath: str,
+    ) -> Optional[str]:
         doc_tree = node.getroottree()
 
-        # Utility: safely escape values for XPath literals
-        def lit(val: str) -> str:
-            return self._escape_for_xpath_literal(val)
+        try:
+            matches = doc_tree.xpath(xpath)
+        except (etree.XPathError, ValueError, TypeError):
+            return None
 
-        # Evaluate XPath against this node's document and determine uniqueness
-        def determine_xpath_uniqueness(xpath: str):
-            try:
-                matches = doc_tree.xpath(xpath)
-            except (etree.XPathError, ValueError, TypeError):
-                return False, None
+        if not matches:
+            return None
 
-            if not matches:
-                return False, None
+        if len(matches) == 1:
+            return xpath
 
-            if len(matches) > 1:
-                try:
-                    idx = matches.index(node)
-                except ValueError:
-                    idx = 0
-                return False, idx
+        try:
+            index = matches.index(node)
+        except ValueError:
+            index = 0
 
-            return True, None
-
-        # Build XPath from a single attribute
-        def build_xpath_from_attribute(attr_name: str):
-            val = attrs.get(attr_name)
-            if not val:
-                return None
-            return f"//{tag}[@{attr_name}={lit(val)}]"
-
-        # Try unique attributes first
-        unique_attrs = ["id", "data-testid", "name"]
-        for attr in unique_attrs:
-            xpath = build_xpath_from_attribute(attr)
-            if xpath:
-                is_unique, idx = determine_xpath_uniqueness(xpath)
-                if is_unique:
-                    return xpath
-                if idx is not None:
-                    return f"({xpath})[{idx + 1}]"
-
-        # Try maybe-unique attributes
-        maybe_unique_attrs = ["class", "aria-label", "title"]
-        for attr in maybe_unique_attrs:
-            xpath = build_xpath_from_attribute(attr)
-            if xpath:
-                is_unique, idx = determine_xpath_uniqueness(xpath)
-                if is_unique:
-                    return xpath
-                if idx is not None:
-                    return f"({xpath})[{idx + 1}]"
-
-        # Fallback to hierarchical path
-        return self._build_hierarchical_xpath(node)
+        return f"({xpath})[{index + 1}]"
 
     def _build_hierarchical_xpath(self, node: etree.Element) -> str:
         """

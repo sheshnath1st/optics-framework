@@ -75,9 +75,6 @@ class PlaywrightFindElement(ElementSourceInterface):
         internal_logger.exception(
             "PlaywrightFindElement does not support get_interactive_elements()"
         )
-        # raise NotImplementedError(
-        #     "PlaywrightFindElement does not support get_interactive_elements()"
-        # )
         return ["PlaywrightFindElement does not support get_interactive_elements()"]
 
     # --------------------------------------------------
