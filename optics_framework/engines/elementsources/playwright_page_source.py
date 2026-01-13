@@ -391,6 +391,107 @@ class PlaywrightPageSource(ElementSourceInterface):
         Build a minimal, Playwright-compatible XPath for a given DOM node.
 
         Design intent:
+        - Prefer stable attributes (id, data-testid, name).
+        - Fall back to structural XPath only when needed.
+        - Keep output simple and deterministic.
+        """
+        """
+           Build a minimal, Playwright-compatible XPath for a given DOM node.
+
+            Design intent:
+            - Provide a *best-effort* XPath that is simple, readable, and fast to resolve.
+            - Prefer stable, unique attributes over deep DOM traversal.
+            - Act strictly as a fallback mechanism for operations like bounding-box
+                calculation where a locator is required but precision is not critical.
+
+            Why this method is intentionally "simple":
+            - It is NOT meant to generate a perfectly unique or future-proof XPath.
+            - It avoids expensive document-wide uniqueness checks.
+            - It prioritizes speed and resilience over absolute accuracy.
+            - More advanced XPath generation is handled elsewhere (`get_xpath`).
+
+            Resolution strategy (in order):
+             1. Use `id` attribute if present (most reliable and unique).
+             2. Use `data-testid` if available (common in test-friendly UIs).
+             3. Use `name` attribute when applicable.
+             4. Fall back to a hierarchical tag-based XPath with positional indexes.
+
+             Important behavior notes:
+                - Returned XPath may match multiple elements; callers must handle this.
+                - The XPath is always absolute (`//` or `/`) for Playwright compatibility.
+                - If the node cannot be resolved meaningfully, `None` is returned.
+                - This method performs NO validation against the live DOM.
+
+             Args:
+                    node (etree.Element):
+                        lxml DOM element for which an XPath is required.
+
+            Returns:
+                    Optional[str]:
+                        A simple XPath string or None if it cannot be constructed.
+        """
+        if node is None or not hasattr(node, "tag"):
+            return None
+
+        # 1️⃣ Attribute-based XPath (fast & stable)
+        attr_xpath = PlaywrightPageSource._build_xpath_from_attributes(node)
+        if attr_xpath:
+            return attr_xpath
+
+        # 2️⃣ Structural fallback
+        return PlaywrightPageSource._build_structural_xpath(node)
+
+    @staticmethod
+    def _build_xpath_from_attributes(node: etree.Element) -> Optional[str]:
+        tag = node.tag or "*"
+        attrs = node.attrib or {}
+
+        for attr in ("id", "data-testid", "name"):
+            value = attrs.get(attr)
+            if value:
+                escaped = PlaywrightPageSource._escape_xpath_value(value)
+                return f"//{tag}[@{attr}={escaped}]"
+
+        return None
+
+    @staticmethod
+    def _build_structural_xpath(node: etree.Element) -> Optional[str]:
+        path = []
+        current = node
+
+        while current is not None and hasattr(current, "tag"):
+            parent = current.getparent()
+            tag = current.tag or "*"
+
+            if parent is None:
+                path.insert(0, tag)
+                break
+
+            siblings = [sib for sib in parent if sib.tag == tag]
+            if len(siblings) > 1:
+                index = siblings.index(current) + 1
+                path.insert(0, f"{tag}[{index}]")
+            else:
+                path.insert(0, tag)
+
+            current = parent
+
+        return "/" + "/".join(path) if path else None
+
+    @staticmethod
+    def _escape_xpath_value(val: str) -> str:
+        if "'" not in val:
+            return f"'{val}'"
+
+        parts = val.split("'")
+        return "concat('" + "', \"'\", '".join(parts) + "')"
+
+    @staticmethod
+    def _build_simple_xpath1(node: etree.Element) -> Optional[str]:
+        """
+        Build a minimal, Playwright-compatible XPath for a given DOM node.
+
+        Design intent:
         - Provide a *best-effort* XPath that is simple, readable, and fast to resolve.
         - Prefer stable, unique attributes over deep DOM traversal.
         - Act strictly as a fallback mechanism for operations like bounding-box
@@ -471,124 +572,105 @@ class PlaywrightPageSource(ElementSourceInterface):
 
         return "/" + "/".join(path) if path else None
 
-    def _extract_display_text(self, node: etree.Element, page: Any) -> Tuple[Optional[str], Optional[str]]:
+    def _extract_display_text(
+            self,
+            node: etree.Element,
+            page: Any,
+    ) -> Tuple[Optional[str], Optional[str]]:
         """
-        Extract the most meaningful, human-readable text representation
-        of a web element.
+        Extract a human-readable display label for a DOM element.
 
-        Design intent:
-        - Provide a *best-effort* display label suitable for:
-            - visual inspection
-            - debugging
-            - element reporting
-            - UI exploration tooling
-        - Prefer fast, DOM-based extraction before falling back to
-          Playwright calls, which are slower and asynchronous.
-        - Avoid returning empty or misleading values whenever possible.
-
-        Text resolution strategy (ordered by cost & reliability):
-
-        1. Direct lxml text content (`node.text`)
-           - Fastest and cheapest operation.
-           - Captures inline text inside the element.
-
-        2. Tail text (`node.tail`)
-           - Handles text that appears immediately after the element.
-           - Useful for inline tags like <span>, <strong>, etc.
-
-        3. Accessibility attributes
-           - `aria-label` → primary accessibility label.
-           - `title`      → tooltip-style descriptions.
-
-        4. Media & input hints
-           - `alt`         → image alternative text.
-           - `placeholder` → input field hint text.
-
-        5. Live DOM text via Playwright (`innerText`)
-           - Most accurate visual representation.
-           - Slowest option due to browser round-trip.
-           - Used only when static DOM text is unavailable.
-
-        6. Structural fallbacks
-           - `id`    → often meaningful in test-oriented applications.
-           - `class` → LAST resort, generally not user-facing.
-
-        Important behavior notes:
-        - This method NEVER raises on failure; it fails gracefully.
-        - Returned attribute name indicates the source of extracted text.
-        - Returned text may not be unique or stable across renders.
-        - Empty or whitespace-only values are ignored at every step.
-
-        Args:
-            node (etree.Element):
-                lxml DOM node representing the element.
-            page (Any):
-                Active Playwright page instance used only for
-                innerText extraction when required.
-
-        Returns:
-            Tuple[Optional[str], Optional[str]]:
-                - text_value     → extracted display text (or None)
-                - attribute_used → source attribute name (or None)
+        Resolution order is preserved exactly as before.
         """
-        attrs = node.attrib or {}
+        if node is None:
+            return None, None
 
-        # Try text content from lxml element first (fastest)
-        text_content = node.text
-        if text_content and text_content.strip():
-            return text_content.strip(), "text"
+        # 1️⃣ Fast DOM-based text
+        text = self._extract_dom_text(node)
+        if text:
+            return text
 
-        # Try tail text (text after the element)
+        # 2️⃣ Attribute-based fallbacks
+        text = self._extract_attribute_text(node)
+        if text:
+            return text
+
+        # 3️⃣ Playwright innerText (slow fallback)
+        text = self._extract_playwright_text(node, page)
+        if text:
+            return text
+
+        # 4️⃣ Identifier-based fallback
+        return self._extract_identifier_text(node)
+
+    @staticmethod
+    def _extract_dom_text(
+            node: etree.Element,
+    ) -> Optional[Tuple[str, str]]:
+        if node.text and node.text.strip():
+            return node.text.strip(), "text"
+
         if node.tail and node.tail.strip():
             return node.tail.strip(), "tail"
 
-        # Try aria-label
-        aria_label = attrs.get("aria-label", "").strip()
-        if aria_label:
-            return aria_label, "aria-label"
+        return None
 
-        # Try title
-        title = attrs.get("title", "").strip()
-        if title:
-            return title, "title"
+    @staticmethod
+    def _extract_attribute_text(
+            node: etree.Element,
+    ) -> Optional[Tuple[str, str]]:
+        attrs = node.attrib or {}
 
-        # Try alt (for images)
-        alt = attrs.get("alt", "").strip()
-        if alt:
-            return alt, "alt"
+        for key in ("aria-label", "title", "alt", "placeholder"):
+            value = attrs.get(key, "").strip()
+            if value:
+                return value, key
 
-        # Try placeholder (for inputs)
-        placeholder = attrs.get("placeholder", "").strip()
-        if placeholder:
-            return placeholder, "placeholder"
+        return None
 
-        # Try to get innerText via Playwright (slower, but more accurate)
+    def _extract_playwright_text(
+            self,
+            node: etree.Element,
+            page: Any,
+    ) -> Optional[Tuple[str, str]]:
         try:
             xpath = self._build_simple_xpath(node)
-            if xpath:
-                locator = page.locator(f"xpath={xpath}")
-                count = run_async(locator.count())
-                if count > 0:
-                    inner_text = run_async(locator.first.inner_text())
-                    if inner_text and inner_text.strip():
-                        return inner_text.strip(), "innerText"
-        except Exception as e:
-            internal_logger.debug(f"Failed to get innerText via Playwright: {e}")
+            if not xpath:
+                return None
 
-        # Try id
+            locator = page.locator(f"xpath={xpath}")
+            if run_async(locator.count()) == 0:
+                return None
+
+            text = run_async(locator.first.inner_text())
+            if text and text.strip():
+                return text.strip(), "innerText"
+
+        except Exception as e:
+            internal_logger.debug(
+                "[PlaywrightPageSource] Failed innerText extraction: %s",
+                e,
+            )
+
+        return None
+
+    @staticmethod
+    def _extract_identifier_text(
+            node: etree.Element,
+    ) -> Tuple[Optional[str], Optional[str]]:
+        attrs = node.attrib or {}
+
         element_id = attrs.get("id", "").strip()
         if element_id:
             return element_id, "id"
 
-        # Try class (last resort, but usually not meaningful)
         class_name = attrs.get("class", "").strip()
         if class_name:
-            # Take first class if multiple
-            first_class = class_name.split()[0] if class_name else None
-            if first_class:
-                return first_class, "class"
+            first_class = class_name.split()[0]
+            return first_class, "class"
 
         return None, None
+
 
     def _should_include_element(self, node: etree.Element, filter_config: Optional[List[str]]) -> bool:
         """
