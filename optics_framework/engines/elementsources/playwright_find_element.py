@@ -47,16 +47,38 @@ class PlaywrightFindElement(ElementSourceInterface):
         page = self._require_page()
         return run_async(page.content())
 
-    def get_interactive_elements(self) -> List[Any]:
+    def get_interactive_elements(
+            self,
+            filter_config: Optional[List[str]] = None
+    ) -> List[Any]:
         """
-        Not supported (use Playwright native locators instead)
+        Not supported for PlaywrightFindElement.
+
+        Design rationale:
+        - PlaywrightFindElement is optimized for direct element resolution
+          using known selectors (CSS, XPath, text).
+        - It intentionally avoids full DOM traversal, bounding-box
+          calculations, and semantic filtering.
+        - Interactive element discovery is delegated to PlaywrightPageSource,
+          which is designed specifically for DOM introspection and tooling use cases.
+
+        Contract compliance:
+        - This method exists to satisfy ElementSourceInterface.
+        - The parameter `filter_config` is accepted for signature compatibility,
+          but is not used.
+
+        Usage guidance:
+        - Use PlaywrightPageSource.get_interactive_elements() when element
+          discovery or inspection is required.
+        - Use PlaywrightFindElement.locate() for execution-time interactions.
         """
         internal_logger.exception(
             "PlaywrightFindElement does not support get_interactive_elements()"
         )
-        raise NotImplementedError(
-            "PlaywrightFindElement does not support get_interactive_elements()"
-        )
+        # raise NotImplementedError(
+        #     "PlaywrightFindElement does not support get_interactive_elements()"
+        # )
+        return ["PlaywrightFindElement does not support get_interactive_elements()"]
 
     # --------------------------------------------------
     # Element location
@@ -124,52 +146,70 @@ class PlaywrightFindElement(ElementSourceInterface):
     # --------------------------------------------------
 
     def assert_elements(
-        self,
-        elements: List[str],
-        timeout: int = 10,
-        rule: str = "any",
+            self,
+            elements: List[str],
+            timeout: int = 10,
+            rule: str = "any",
     ):
         """
-        Assert presence of elements
+        Assert presence of elements.
 
         rule:
         - any: return True if any found
         - all: return True only if all found
         """
+        self._validate_assert_rule(rule)
 
+        try:
+            self._require_page()
+        except OpticsError:
+            return False, utils.get_timestamp()
+
+        found = dict.fromkeys(elements, False)
+        success = self._poll_for_elements(elements, found, timeout, rule)
+
+        return success, utils.get_timestamp()
+
+    @staticmethod
+    def _validate_assert_rule(rule: str) -> None:
         if rule not in ("any", "all"):
             raise OpticsError(
                 Code.E0403,
                 message="Invalid rule. Use 'any' or 'all'",
             )
 
-        # Check if driver is initialized before entering the loop
-        try:
-            self._require_page()
-        except OpticsError:
-            # If driver is not initialized, return False immediately instead of looping
-            return False, utils.get_timestamp()
-
+    def _poll_for_elements(
+            self,
+            elements: List[str],
+            found: dict,
+            timeout: int,
+            rule: str,
+    ) -> bool:
         start_time = time.time()
-        found = dict.fromkeys(elements, False)
 
         while time.time() - start_time < timeout:
             try:
-                for el in elements:
-                    if not found[el] and self.locate(el):
-                        found[el] = True
-                        if rule == "any":
-                            return True, utils.get_timestamp()
-
-                if rule == "all" and all(found.values()):
-                    return True, utils.get_timestamp()
-
+                if self._evaluate_elements(elements, found, rule):
+                    return True
                 time.sleep(0.5)
-
             except Exception as e:
                 raise OpticsError(
                     Code.E0401,
                     message=f"Error during element assertion: {e}",
                 ) from e
 
-        return False, utils.get_timestamp()
+        return False
+
+    def _evaluate_elements(
+        self,
+        elements: List[str],
+        found: dict,
+        rule: str,
+    ) -> bool:
+        for el in elements:
+            if not found[el] and self.locate(el):
+                found[el] = True
+                if rule == "any":
+                    return True
+
+        return rule == "all" and all(found.values())
