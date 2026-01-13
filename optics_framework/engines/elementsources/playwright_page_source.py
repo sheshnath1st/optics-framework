@@ -1231,6 +1231,9 @@ class PlaywrightPageSource(ElementSourceInterface):
                 if condition_fn():
                     return True
             except Exception:
+                # Intentionally ignore transient exceptions from condition_fn
+                # (e.g. DOM mutations, stale elements, timing issues) and
+                # continue retrying until timeout is reached.
                 pass
             time.sleep(0.3)
         return False
