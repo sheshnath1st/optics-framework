@@ -1,4 +1,6 @@
 import os
+from typing import Any
+
 import yaml
 import pytest
 from optics_framework.optics import Optics
@@ -11,7 +13,7 @@ PLAYWRIGHT_CONFIG_PATH = os.path.join(
 )
 
 
-def load_config(path):
+def load_config(path) -> Any:
     with open(path, "r", encoding="utf-8") as f:
         return yaml.safe_load(f)
 
