@@ -556,14 +556,7 @@ class Appium(DriverInterface):
             app_name: str,
             event_name: Optional[str] = None,
     ) -> None:
-        """
-        Launch application or deep link.
-
-        Supports:
-        - App activation
-        - Android deep links
-        - iOS deep links
-        """
+        """Launch application or deep link."""
 
         if self.driver is None:
             self.start_session(event_name=event_name)
@@ -574,63 +567,12 @@ class Appium(DriverInterface):
             self.event_sdk.capture_event(event_name)
 
         try:
-            # ✅ Deep link handling
-            if isinstance(app_name, str) and "://" in app_name:
-
-                platform = (
-                        self.capabilities.get(self.CAP_PLATFORM_NAME)
-                        or self.capabilities.get(self.CAP_APPIUM_PLATFORM_NAME)
-                )
-
-                if not platform:
-                    raise OpticsError(
-                        Code.E0104,
-                        message="platformName capability missing",
-                    )
-
-                platform = str(platform).lower()
-
-                # ---------- ANDROID ----------
-                if platform == self.PLATFORM_ANDROID:
-                    try:
-                        driver.execute_script(
-                            "mobile: deepLink",
-                            {"url": app_name},
-                        )
-                    except Exception:
-                        subprocess.run(
-                            [
-                                "adb",
-                                "shell",
-                                "am",
-                                "start",
-                                "-a",
-                                "android.intent.action.VIEW",
-                                "-d",
-                                app_name,
-                            ],
-                            check=True,
-                        )
-
-                # ---------- IOS ----------
-                elif platform == self.PLATFORM_IOS:
-                    driver.execute_script(
-                        "mobile: launchApp",
-                        {"bundleId": "com.apple.mobilesafari"},
-                    )
-                    driver.get(app_name)
-
-                internal_logger.debug(
-                    f"Deep link launched: {app_name}"
-                )
+            if self._is_deeplink(app_name):
+                self._open_deeplink(driver, app_name)
                 return
 
-            # ✅ Normal app launch
             driver.activate_app(app_name)
-
-            internal_logger.debug(
-                f"Activated app: {app_name}"
-            )
+            internal_logger.debug(f"Activated app: {app_name}")
 
         except Exception as exc:
             raise OpticsError(
@@ -1103,3 +1045,91 @@ class Appium(DriverInterface):
         else:
             internal_logger.error(f"Unknown element type: {element_type}")
             return None
+
+    @staticmethod
+    def _is_deeplink(value: str) -> bool:
+        return isinstance(value, str) and "://" in value
+
+    def _open_deeplink(
+            self,
+            driver: WebDriver,
+            deeplink: str,
+    ) -> None:
+
+        platform = (
+                self.capabilities.get(self.CAP_PLATFORM_NAME)
+                or self.capabilities.get(self.CAP_APPIUM_PLATFORM_NAME)
+        )
+
+        if not platform:
+            raise OpticsError(
+                Code.E0104,
+                message="platformName capability missing",
+            )
+
+        platform = str(platform).lower()
+
+        if platform == self.PLATFORM_ANDROID:
+            self._open_android_deeplink(driver, deeplink)
+            return
+
+        if platform == self.PLATFORM_IOS:
+            self._open_ios_deeplink(driver, deeplink)
+            return
+
+        raise OpticsError(
+            Code.E0104,
+            message=f"Unsupported platform: {platform}",
+        )
+
+    def _open_android_deeplink(
+            self,
+            driver: WebDriver,
+            deeplink: str,
+    ) -> None:
+
+        try:
+            driver.execute_script(
+                "mobile: deepLink",
+                {"url": deeplink},
+            )
+            internal_logger.debug(
+                f"Android deep link launched: {deeplink}"
+            )
+            return
+
+        except Exception:
+            internal_logger.debug(
+                "mobile:deepLink failed, using adb fallback"
+            )
+
+        subprocess.run(
+            [
+                "adb",
+                "shell",
+                "am",
+                "start",
+                "-a",
+                "android.intent.action.VIEW",
+                "-d",
+                deeplink,
+            ],
+            check=True,
+        )
+
+    def _open_ios_deeplink(
+            self,
+            driver: WebDriver,
+            deeplink: str,
+    ) -> None:
+
+        driver.execute_script(
+            "mobile: launchApp",
+            {"bundleId": "com.apple.mobilesafari"},
+        )
+
+        driver.get(deeplink)
+
+        internal_logger.debug(
+            f"iOS deep link launched: {deeplink}"
+        )
