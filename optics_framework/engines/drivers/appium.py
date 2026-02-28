@@ -1046,7 +1046,6 @@ class Appium(DriverInterface):
             internal_logger.error(f"Unknown element type: {element_type}")
             return None
 
-    @staticmethod
     def _is_deeplink(value: str) -> bool:
         return isinstance(value, str) and "://" in value
 
